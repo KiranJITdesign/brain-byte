@@ -1,0 +1,21 @@
+# Installed dependencies and virtual environments
+**/node_modules/
+**/.venv/
+**/venv/
+
+# Local configuration and secrets
+**/.env
+!**/.env.example
+
+# Generated database, model weights, and runtime files
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+**/*.pt
+**/*.log
+**/__pycache__/
+**/*.py[cod]
+**/.ultralytics/
+
+# Frontend build output
+**/dist/
