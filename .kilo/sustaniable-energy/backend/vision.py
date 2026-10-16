@@ -1,5 +1,13 @@
 import io
+import os
+from pathlib import Path
+
 from PIL import Image
+
+# Keep Ultralytics configuration inside the backend so startup does not depend
+# on the user's global AppData directory being writable.
+os.environ.setdefault("YOLO_CONFIG_DIR", str(Path(__file__).resolve().parent / ".ultralytics"))
+
 from ultralytics import YOLO
 
 EQUIPMENT = {

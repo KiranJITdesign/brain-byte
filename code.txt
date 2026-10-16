@@ -1,0 +1,2566 @@
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import * as THREE from 'three';
+import {
+  AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid,
+  Tooltip as RechartsTooltip, ResponsiveContainer, Legend
+} from 'recharts';
+import {
+  Zap, AlertTriangle, CheckCircle2, Cpu, Eye, Sparkles, Sliders, LayoutDashboard,
+  Box, Sun, Moon, Play, Pause, RotateCcw, Building2, Clock, IndianRupee,
+  Leaf, Upload, Camera, Send, FileText, ChevronRight, ShieldAlert,
+  Users, Monitor, Wind, Lightbulb, Tv, Power, ArrowUpRight, Layers,
+  Volume2, Video, Fan, Server, Compass, Maximize2
+} from 'lucide-react';
+
+// ============================================================================
+// CONSTANTS & EXACT 5-FLOOR ARCHITECTURAL BLUEPRINT DATA
+// Modeled directly on the 5 uploaded college floor plans & courtyard photo:
+// Floor 0: Ground Floor (Workshop, Auditorium, Badminton Court, Admin/Principal)
+// Floor 1: 1st Floor - Dept. of Electronics & Communication Engineering (ECE)
+// Floor 2: 2nd Floor - Dept. of Information Science & Engineering (ISE) & Library
+// Floor 3: 3rd Floor - Dept. of Computer Science & Engineering (CSE) & Food Tech
+// Floor 4: 4th Floor - Atal Incubation Centre (AIC - JIT Foundation)
+// ============================================================================
+const TARIFF_INR = 8;
+const CO2_PER_KWH = 0.8;
+
+const FLOOR_META = [
+  {
+    level: 0,
+    short: "Floor 0 (GF)",
+    name: "Ground Floor — Auditorium, Workshop & Admin",
+    banner: "GROUND FLOOR • ADMINISTRATION, AUDITORIUM & WORKSHOP",
+    accent: "#10b981"
+  },
+  {
+    level: 1,
+    short: "Floor 1 (ECE)",
+    name: "1st Floor — Dept. of Electronics & Communication Engg.",
+    banner: "DEPARTMENT OF ELECTRONICS & COMMUNICATION ENGINEERING",
+    accent: "#06b6d4"
+  },
+  {
+    level: 2,
+    short: "Floor 2 (ISE & Lib)",
+    name: "2nd Floor — Dept. of Information Science & Central Library",
+    banner: "DEPARTMENT OF INFORMATION SCIENCE & ENGINEERING",
+    accent: "#3b82f6"
+  },
+  {
+    level: 3,
+    short: "Floor 3 (CSE)",
+    name: "3rd Floor — Dept. of Computer Science & Food Tech",
+    banner: "DEPARTMENT OF COMPUTER SCIENCE & ENGINEERING",
+    accent: "#a855f7"
+  },
+  {
+    level: 4,
+    short: "Floor 4 (AIC)",
+    name: "4th Floor — Atal Incubation Centre (JIT Foundation)",
+    banner: "ATAL INCUBATION CENTRE - JYOTHY INSTITUTE OF TECHNOLOGY FOUNDATION",
+    accent: "#ec4899"
+  }
+];
+
+// Helper to generate realistic room electrical fixtures (Fans, Lights, CCTV, Projector, Speakers, AC, PCs, Electrical DB)
+function makeFixtures(idPrefix, config) {
+  const items = [];
+  let idx = 1;
+  const add = (name, kind, power_kw, start_hour, end_hour, count = 1, always24x7 = false) => {
+    items.push({
+      id: idPrefix * 100 + idx++,
+      name,
+      kind, // 'fan' | 'light' | 'projector' | 'speaker' | 'cctv' | 'ac' | 'computer' | 'electrical'
+      power_kw,
+      count,
+      is_on: true,
+      start_hour,
+      end_hour,
+      always24x7
+    });
+  };
+
+  const s = config.start ?? 8;
+  const e = config.end ?? 17;
+
+  // Every room has Ceiling Fans, LED Tube Lights, CCTV Camera, and Smart Electrical DB Panel
+  add(`Ceiling Fans x${config.fans || 4}`, 'fan', Number(((config.fans || 4) * 0.075).toFixed(2)), s, e, config.fans || 4);
+  add(`LED Tube Lights x${config.lights || 6}`, 'light', Number(((config.lights || 6) * 0.04).toFixed(2)), s, e, config.lights || 6);
+  add(`IP CCTV Dome Cam x${config.cctv || 2}`, 'cctv', Number(((config.cctv || 2) * 0.015).toFixed(2)), 0, 24, config.cctv || 2, true);
+  add(`Smart DB & Meter Panel`, 'electrical', 0.05, 0, 24, 1, true);
+
+  if (config.projector) {
+    add(`HD Ceiling Projector`, 'projector', 0.35, s, e, 1);
+  }
+  if (config.speakers) {
+    add(`PA Wall Speakers x${config.speakers}`, 'speaker', Number((config.speakers * 0.06).toFixed(2)), s, e, config.speakers);
+  }
+  if (config.acKw) {
+    add(`Split AC Units (${config.acKw} kW)`, 'ac', config.acKw, s, e, Math.max(1, Math.round(config.acKw / 1.5)));
+  }
+  if (config.pcKw) {
+    add(`${config.pcLabel || 'Lab Workstations'}`, 'computer', config.pcKw, s, e, config.pcCount || 25);
+  }
+  return items;
+}
+
+// Blueprint coordinate system: x in [0..600], y in [0..380]
+// Courtyard Atrium Void is at x: 325..445, y: 85..285, and Left Lightwell Void is at x: 75..125, y: 185..285
+const INITIAL_FLOORS = [
+  // ==========================================================================
+  // FLOOR 0: GROUND FLOOR (Matches 5th image: A1 Workshop, A16 Auditorium, Badminton Court, Principal, Board Room, Reception)
+  // ==========================================================================
+  {
+    level: 0,
+    rooms: [
+      {
+        id: 1001, name: "A25 Boys & Girls Toilet / Maint.", code: "A25/A26", kind: "utility",
+        x: 12, y: 12, w: 175, h: 48, occupied_from: 7, occupied_to: 20,
+        equipment: makeFixtures(1001, { fans: 4, lights: 8, cctv: 1, start: 6, end: 21 })
+      },
+      {
+        id: 1002, name: "A19 Central Store & Lift", code: "A19", kind: "store",
+        x: 192, y: 12, w: 125, h: 48, occupied_from: 9, occupied_to: 17,
+        equipment: makeFixtures(1002, { fans: 2, lights: 4, cctv: 2, start: 8, end: 18 })
+      },
+      {
+        id: 1003, name: "A7 Principal Director's Office", code: "A7", kind: "office",
+        x: 455, y: 12, w: 133, h: 85, occupied_from: 9, occupied_to: 18,
+        equipment: makeFixtures(1003, { fans: 3, lights: 6, cctv: 2, projector: true, speakers: 2, acKw: 2.5, pcKw: 0.6, pcLabel: "Admin PCs x4", start: 8, end: 19 })
+      },
+      {
+        id: 1004, name: "A1 Workshop", code: "A1", kind: "lab",
+        x: 12, y: 66, w: 62, h: 300, occupied_from: 9, occupied_to: 17,
+        equipment: makeFixtures(1004, { fans: 8, lights: 12, cctv: 3, speakers: 2, pcKw: 4.5, pcLabel: "CNC & Lathe Machines", start: 8, end: 18 })
+      },
+      {
+        id: 1005, name: "A16 Auditorium", code: "A16", kind: "hall",
+        x: 142, y: 198, w: 130, h: 168, occupied_from: 10, occupied_to: 16,
+        // Planted anomaly on Ground Floor: Auditorium ACs, Stage Projector & PA Speakers left running until 22:00!
+        equipment: makeFixtures(1005, { fans: 10, lights: 16, cctv: 4, projector: true, speakers: 6, acKw: 6.0, start: 9, end: 22 })
+      },
+      {
+        id: 1006, name: "Badminton Court (Courtyard)", code: "COURT", kind: "hall",
+        x: 315, y: 92, w: 135, h: 178, occupied_from: 6, occupied_to: 20,
+        equipment: makeFixtures(1006, { fans: 4, lights: 10, cctv: 4, speakers: 2, start: 6, end: 21 })
+      },
+      {
+        id: 1007, name: "A8 Board Room", code: "A8", kind: "hall",
+        x: 492, y: 104, w: 96, h: 90, occupied_from: 10, occupied_to: 17,
+        equipment: makeFixtures(1007, { fans: 4, lights: 8, cctv: 2, projector: true, speakers: 4, acKw: 3.0, start: 9, end: 19 })
+      },
+      {
+        id: 1008, name: "A23 Reception Area & Cabin", code: "A23", kind: "office",
+        x: 486, y: 242, w: 102, h: 124, occupied_from: 8, occupied_to: 19,
+        equipment: makeFixtures(1008, { fans: 4, lights: 8, cctv: 3, speakers: 2, acKw: 1.5, pcKw: 0.8, pcLabel: "Reception Desk & Kiosk", start: 8, end: 20 })
+      },
+      {
+        id: 1009, name: "A6 Office All Inclusive & A15 Exam Control", code: "A6/A15", kind: "office",
+        x: 278, y: 298, w: 202, h: 68, occupied_from: 9, occupied_to: 17,
+        equipment: makeFixtures(1009, { fans: 6, lights: 10, cctv: 3, acKw: 2.5, pcKw: 1.8, pcLabel: "Exam Control PCs x10", start: 9, end: 18 })
+      }
+    ]
+  },
+
+  // ==========================================================================
+  // FLOOR 1: 1ST FLOOR - ECE (Matches 3rd image: ACS 12 PyNest Lab, AEC 9, A15 VLSI, A36, AEC 7, AEC 6, A35 Server Room, A2 Computer Center)
+  // ==========================================================================
+  {
+    level: 1,
+    rooms: [
+      {
+        id: 2001, name: "Analog & System Design Lab", code: "ANALOG", kind: "lab",
+        x: 12, y: 12, w: 96, h: 62, occupied_from: 9, occupied_to: 17,
+        equipment: makeFixtures(2001, { fans: 4, lights: 6, cctv: 2, projector: true, speakers: 2, pcKw: 2.4, pcLabel: "CRO & Signal Workstations", start: 9, end: 17 })
+      },
+      {
+        id: 2002, name: "ACS 12 PyNest Lab", code: "ACS 12", kind: "lab",
+        x: 112, y: 12, w: 205, h: 62, occupied_from: 9, occupied_to: 17,
+        // PRIMARY HACKATHON ANOMALY: 40 PCs, Split ACs, Fans, Lights, Projector & Speakers running until 23:00!
+        equipment: makeFixtures(2002, { fans: 8, lights: 12, cctv: 3, projector: true, speakers: 4, acKw: 4.5, pcKw: 6.0, pcLabel: "PyNest Lab PCs x40", start: 8, end: 23 })
+      },
+      {
+        id: 2003, name: "AEC 9 Advance Comm. Lab", code: "AEC 9", kind: "lab",
+        x: 321, y: 12, w: 98, h: 62, occupied_from: 9, occupied_to: 17,
+        equipment: makeFixtures(2003, { fans: 4, lights: 6, cctv: 2, projector: true, speakers: 2, acKw: 2.0, pcKw: 2.5, pcLabel: "RF & DSP Rigs x20", start: 9, end: 18 })
+      },
+      {
+        id: 2004, name: "A15 VLSI & Signal Processing Lab", code: "A15", kind: "lab",
+        x: 423, y: 12, w: 68, h: 62, occupied_from: 9, occupied_to: 17,
+        equipment: makeFixtures(2004, { fans: 4, lights: 6, cctv: 2, acKw: 2.0, pcKw: 3.0, pcLabel: "FPGA & Cadence PCs x25", start: 9, end: 19 })
+      },
+      {
+        id: 2005, name: "A36 Laboratory", code: "A36", kind: "lab",
+        x: 495, y: 12, w: 93, h: 62, occupied_from: 9, occupied_to: 17,
+        equipment: makeFixtures(2005, { fans: 4, lights: 6, cctv: 2, projector: true, pcKw: 2.2, pcLabel: "Lab PCs x20", start: 9, end: 17 })
+      },
+      {
+        id: 2006, name: "A3 Chemistry Lab & A33 Dept", code: "A3/A33", kind: "lab",
+        x: 12, y: 162, w: 62, h: 204, occupied_from: 9, occupied_to: 17,
+        equipment: makeFixtures(2006, { fans: 6, lights: 10, cctv: 2, speakers: 2, pcKw: 1.8, pcLabel: "Fume Hoods & Analyzers", start: 8, end: 17 })
+      },
+      {
+        id: 2007, name: "AEC 7 Embedded & AEC 6 Digital Lab", code: "AEC 6/7", kind: "lab",
+        x: 134, y: 172, w: 106, h: 96, occupied_from: 9, occupied_to: 17,
+        equipment: makeFixtures(2007, { fans: 6, lights: 8, cctv: 2, projector: true, speakers: 2, acKw: 3.0, pcKw: 3.2, pcLabel: "Embedded Kits & PCs x30", start: 9, end: 19 })
+      },
+      {
+        id: 2008, name: "AEC 1, AEC 2 & AEC 3 Class Rooms", code: "AEC 1-3", kind: "classroom",
+        x: 496, y: 94, w: 92, h: 146, occupied_from: 9, occupied_to: 17,
+        equipment: makeFixtures(2008, { fans: 9, lights: 12, cctv: 3, projector: true, speakers: 6, start: 8, end: 18 })
+      },
+      {
+        id: 2009, name: "A17 Dept of Electronics & Comm. (ECE)", code: "A17", kind: "office",
+        x: 78, y: 304, w: 186, h: 62, occupied_from: 9, occupied_to: 17,
+        equipment: makeFixtures(2009, { fans: 6, lights: 8, cctv: 2, acKw: 2.0, pcKw: 1.5, pcLabel: "Faculty PCs x12", start: 9, end: 18 })
+      },
+      {
+        id: 2010, name: "A35 Server Room", code: "A35", kind: "server",
+        x: 268, y: 304, w: 48, h: 62, occupied_from: 0, occupied_to: 24,
+        equipment: makeFixtures(2010, { fans: 2, lights: 2, cctv: 2, acKw: 3.5, pcKw: 5.5, pcLabel: "Rack Servers & Switches", start: 0, end: 24 })
+      },
+      {
+        id: 2011, name: "A2 Computer Center", code: "A2", kind: "lab",
+        x: 320, y: 304, w: 166, h: 62, occupied_from: 8, occupied_to: 18,
+        equipment: makeFixtures(2011, { fans: 8, lights: 10, cctv: 3, projector: true, speakers: 2, acKw: 4.0, pcKw: 5.0, pcLabel: "Central Center PCs x45", start: 8, end: 21 })
+      }
+    ]
+  },
+
+  // ==========================================================================
+  // FLOOR 2: 2ND FLOOR - ISE & LIBRARY (Matches 4th image: A4 Library, A5 Physics, APC 1, AIS 3, Dept of ISE, ACS 8 CodeHub, ACS 7 TechSphere, ACS 6 Seminar Hall)
+  // ==========================================================================
+  {
+    level: 2,
+    rooms: [
+      {
+        id: 3001, name: "AEC 3 NCC, Project Lab & Web Wizards", code: "PROJ/WEB", kind: "lab",
+        x: 12, y: 12, w: 132, h: 105, occupied_from: 9, occupied_to: 17,
+        equipment: makeFixtures(3001, { fans: 6, lights: 8, cctv: 2, projector: true, pcKw: 2.8, pcLabel: "Project Workstations x20", start: 9, end: 18 })
+      },
+      {
+        id: 3002, name: "Dept of Mathematics", code: "MATH", kind: "office",
+        x: 150, y: 12, w: 42, h: 68, occupied_from: 9, occupied_to: 17,
+        equipment: makeFixtures(3002, { fans: 3, lights: 4, cctv: 1, pcKw: 0.6, pcLabel: "Faculty PCs x5", start: 9, end: 17 })
+      },
+      {
+        id: 3003, name: "A4 Library & Information Center", code: "A4 LIB", kind: "hall",
+        x: 196, y: 12, w: 392, h: 68, occupied_from: 8, occupied_to: 20,
+        equipment: makeFixtures(3003, { fans: 14, lights: 20, cctv: 6, speakers: 4, acKw: 5.0, pcKw: 3.0, pcLabel: "Digital Library Terminals x24", start: 8, end: 21 })
+      },
+      {
+        id: 3004, name: "A5 Physics Dept & Physics Lab", code: "A5", kind: "lab",
+        x: 12, y: 182, w: 62, h: 184, occupied_from: 9, occupied_to: 17,
+        equipment: makeFixtures(3004, { fans: 6, lights: 10, cctv: 2, projector: true, speakers: 2, pcKw: 1.5, pcLabel: "Optics & Laser Setup", start: 9, end: 17 })
+      },
+      {
+        id: 3005, name: "APC 1 & AIS 3 Class Rooms", code: "APC1/AIS3", kind: "classroom",
+        x: 126, y: 192, w: 104, h: 106, occupied_from: 9, occupied_to: 17,
+        equipment: makeFixtures(3005, { fans: 6, lights: 8, cctv: 2, projector: true, speakers: 4, start: 8, end: 17 })
+      },
+      {
+        id: 3006, name: "ACS 9 CompilerZone, AIS 2 & AIS 1", code: "ACS9/AIS", kind: "lab",
+        x: 496, y: 96, w: 92, h: 146, occupied_from: 9, occupied_to: 17,
+        equipment: makeFixtures(3006, { fans: 8, lights: 12, cctv: 3, projector: true, speakers: 4, acKw: 3.0, pcKw: 3.5, pcLabel: "CompilerZone PCs x30", start: 9, end: 19 })
+      },
+      {
+        id: 3007, name: "Dept of Information Science & Engg (ISE)", code: "ISE DEPT", kind: "office",
+        x: 78, y: 304, w: 192, h: 62, occupied_from: 9, occupied_to: 17,
+        equipment: makeFixtures(3007, { fans: 6, lights: 8, cctv: 2, acKw: 2.0, pcKw: 1.6, pcLabel: "ISE Faculty PCs x14", start: 9, end: 17 })
+      },
+      {
+        id: 3008, name: "ACS 8 CodeHub & ACS 7 TechSphere Lab", code: "ACS 7/8", kind: "lab",
+        x: 322, y: 304, w: 168, h: 62, occupied_from: 9, occupied_to: 17,
+        equipment: makeFixtures(3008, { fans: 8, lights: 10, cctv: 3, projector: true, speakers: 2, acKw: 3.5, pcKw: 4.5, pcLabel: "CodeHub & TechSphere PCs x36", start: 8, end: 21 })
+      },
+      {
+        id: 3009, name: "ACS 6 Seminar Hall", code: "ACS 6", kind: "hall",
+        x: 494, y: 274, w: 94, h: 92, occupied_from: 10, occupied_to: 16,
+        equipment: makeFixtures(3009, { fans: 6, lights: 10, cctv: 2, projector: true, speakers: 4, acKw: 4.0, start: 9, end: 20 })
+      }
+    ]
+  },
+
+  // ==========================================================================
+  // FLOOR 3: 3RD FLOOR - CSE & FOOD TECH (Matches 2nd image: ACS 1-4, ACV 3, AME 3, Cell & Molecular Bio R&D, Food Tech Lab, A8 CSE Faculty, ACS 10, ACS 11 Pragma Lab, AEC 5 Seminar Hall)
+  // ==========================================================================
+  {
+    level: 3,
+    rooms: [
+      {
+        id: 4001, name: "ACS 1, ACS 2 & ACS 3 Class Rooms", code: "ACS 1-3", kind: "classroom",
+        x: 12, y: 12, w: 298, h: 58, occupied_from: 9, occupied_to: 17,
+        equipment: makeFixtures(4001, { fans: 9, lights: 12, cctv: 3, projector: true, speakers: 6, start: 8, end: 18 })
+      },
+      {
+        id: 4002, name: "ACS 4, ACV 3 & AME 3 Class Rooms", code: "ACS4/AME3", kind: "classroom",
+        x: 314, y: 12, w: 274, h: 58, occupied_from: 9, occupied_to: 17,
+        equipment: makeFixtures(4002, { fans: 9, lights: 12, cctv: 3, projector: true, speakers: 6, start: 8, end: 17 })
+      },
+      {
+        id: 4003, name: "Loginware & Team Chakra Robotics AI Club", code: "ROBOTICS", kind: "lab",
+        x: 12, y: 76, w: 96, h: 68, occupied_from: 9, occupied_to: 19,
+        equipment: makeFixtures(4003, { fans: 4, lights: 6, cctv: 2, projector: true, acKw: 1.5, pcKw: 2.4, pcLabel: "Robotics & ROS Rigs x12", start: 9, end: 22 })
+      },
+      {
+        id: 4004, name: "Cell & Molecular Biology R&D Lab", code: "BIO R&D", kind: "lab",
+        x: 12, y: 162, w: 62, h: 204, occupied_from: 9, occupied_to: 18,
+        equipment: makeFixtures(4004, { fans: 6, lights: 10, cctv: 2, acKw: 3.0, pcKw: 2.6, pcLabel: "PCR, Incubators & Centrifuges", start: 8, end: 20 })
+      },
+      {
+        id: 4005, name: "Food Technology Lab", code: "FOOD LAB", kind: "lab",
+        x: 128, y: 192, w: 78, h: 86, occupied_from: 9, occupied_to: 17,
+        equipment: makeFixtures(4005, { fans: 4, lights: 6, cctv: 2, acKw: 2.0, pcKw: 2.2, pcLabel: "Food Analyzers & Ovens", start: 9, end: 17 })
+      },
+      {
+        id: 4006, name: "Food Tech 1-4, Optics Lab & CSE HOD Office", code: "CSE HOD", kind: "office",
+        x: 494, y: 92, w: 94, h: 162, occupied_from: 9, occupied_to: 17,
+        equipment: makeFixtures(4006, { fans: 8, lights: 12, cctv: 3, projector: true, acKw: 3.0, pcKw: 1.8, pcLabel: "HOD & Optics Lab PCs", start: 9, end: 18 })
+      },
+      {
+        id: 4007, name: "A8 CSE Faculty Room", code: "A8 CSE", kind: "office",
+        x: 82, y: 304, w: 158, h: 62, occupied_from: 9, occupied_to: 17,
+        equipment: makeFixtures(4007, { fans: 6, lights: 8, cctv: 2, speakers: 2, acKw: 2.0, pcKw: 2.0, pcLabel: "CSE Faculty Laptops x18", start: 9, end: 18 })
+      },
+      {
+        id: 4008, name: "ACS 10 Laboratory", code: "ACS 10", kind: "lab",
+        x: 244, y: 304, w: 124, h: 62, occupied_from: 9, occupied_to: 17,
+        equipment: makeFixtures(4008, { fans: 6, lights: 8, cctv: 2, projector: true, speakers: 2, acKw: 3.0, pcKw: 4.2, pcLabel: "ACS 10 Lab PCs x35", start: 8, end: 20 })
+      },
+      {
+        id: 4009, name: "ACS 11 Pragma Lab", code: "ACS 11", kind: "lab",
+        x: 372, y: 304, w: 118, h: 62, occupied_from: 9, occupied_to: 17,
+        // CSE Floor Anomaly: Pragma Lab GPU PCs & AC left on until 22:00
+        equipment: makeFixtures(4009, { fans: 6, lights: 8, cctv: 2, projector: true, speakers: 2, acKw: 3.5, pcKw: 5.0, pcLabel: "Pragma Lab PCs x40", start: 8, end: 22 })
+      },
+      {
+        id: 4010, name: "AEC 5 Seminar Hall", code: "AEC 5", kind: "hall",
+        x: 494, y: 274, w: 94, h: 92, occupied_from: 10, occupied_to: 16,
+        equipment: makeFixtures(4010, { fans: 6, lights: 10, cctv: 2, projector: true, speakers: 4, acKw: 4.0, start: 9, end: 18 })
+      }
+    ]
+  },
+
+  // ==========================================================================
+  // FLOOR 4: 4TH FLOOR - ATAL INCUBATION CENTRE (Matches 1st image: AIC, Biotech Startups, Plant & Microbial Tech Lab, Autonomous System Lab, AIS 9 Vision Nest Lab, AIS 8 C-Brains Lab, AIC Seminar Hall)
+  // ==========================================================================
+  {
+    level: 4,
+    rooms: [
+      {
+        id: 5001, name: "AIC Hub & E2E / Praana / Ameliorate Biotech", code: "AIC NORTH-W", kind: "lab",
+        x: 12, y: 12, w: 294, h: 58, occupied_from: 9, occupied_to: 18,
+        equipment: makeFixtures(5001, { fans: 8, lights: 12, cctv: 4, projector: true, speakers: 2, acKw: 4.0, pcKw: 3.2, pcLabel: "Biotech Startup Suites", start: 9, end: 19 })
+      },
+      {
+        id: 5002, name: "Next Big Innovations, Veripure, Bioaryha & Nuvohelix", code: "AIC NORTH-E", kind: "lab",
+        x: 310, y: 12, w: 278, h: 58, occupied_from: 9, occupied_to: 18,
+        equipment: makeFixtures(5002, { fans: 8, lights: 12, cctv: 4, acKw: 3.5, pcKw: 2.8, pcLabel: "Incubation R&D Pods", start: 9, end: 19 })
+      },
+      {
+        id: 5003, name: "AIC Main Lounge & Language Lab", code: "AIC LOUNGE", kind: "hall",
+        x: 12, y: 74, w: 112, h: 108, occupied_from: 9, occupied_to: 18,
+        equipment: makeFixtures(5003, { fans: 6, lights: 8, cctv: 2, projector: true, speakers: 4, acKw: 2.5, pcKw: 1.8, pcLabel: "Language Audio Pods x20", start: 9, end: 18 })
+      },
+      {
+        id: 5004, name: "Plant & Microbial Tech / Inks & Sensor Lab", code: "SENSOR LAB", kind: "lab",
+        x: 12, y: 190, w: 62, h: 176, occupied_from: 9, occupied_to: 18,
+        equipment: makeFixtures(5004, { fans: 6, lights: 10, cctv: 2, acKw: 2.5, pcKw: 2.4, pcLabel: "Biosensor & Ink Plotters", start: 9, end: 19 })
+      },
+      {
+        id: 5005, name: "AIC SIF & Pranna Discoveries", code: "AIC SIF", kind: "lab",
+        x: 124, y: 192, w: 82, h: 86, occupied_from: 9, occupied_to: 18,
+        equipment: makeFixtures(5005, { fans: 4, lights: 6, cctv: 2, acKw: 2.0, pcKw: 1.6, pcLabel: "SIF Prototyping Gear", start: 9, end: 18 })
+      },
+      {
+        id: 5006, name: "Training Hall & Tattva AI Startup Hub", code: "TATTVA AI", kind: "hall",
+        x: 494, y: 88, w: 94, h: 158, occupied_from: 9, occupied_to: 18,
+        equipment: makeFixtures(5006, { fans: 6, lights: 10, cctv: 3, projector: true, speakers: 4, acKw: 3.5, pcKw: 3.0, pcLabel: "Tattva AI Servers & Desks", start: 9, end: 20 })
+      },
+      {
+        id: 5007, name: "Autonomous System Lab", code: "AUTO LAB", kind: "lab",
+        x: 82, y: 304, w: 122, h: 62, occupied_from: 9, occupied_to: 18,
+        equipment: makeFixtures(5007, { fans: 4, lights: 6, cctv: 2, projector: true, acKw: 2.5, pcKw: 3.2, pcLabel: "Drone & Rover Simulators", start: 9, end: 19 })
+      },
+      {
+        id: 5008, name: "AIS 9 Vision Nest Lab", code: "AIS 9", kind: "lab",
+        x: 208, y: 304, w: 132, h: 62, occupied_from: 9, occupied_to: 17,
+        // AIC Floor Anomaly: Vision Nest GPU rigs, Fans, Lights, Projector & ACs running until 23:00!
+        equipment: makeFixtures(5008, { fans: 6, lights: 8, cctv: 3, projector: true, speakers: 2, acKw: 3.5, pcKw: 5.5, pcLabel: "Vision Nest GPU Workstations", start: 8, end: 23 })
+      },
+      {
+        id: 5009, name: "AIS 8 C-Brains Lab", code: "AIS 8", kind: "lab",
+        x: 344, y: 304, w: 146, h: 62, occupied_from: 9, occupied_to: 18,
+        equipment: makeFixtures(5009, { fans: 6, lights: 8, cctv: 2, projector: true, speakers: 2, acKw: 3.0, pcKw: 4.0, pcLabel: "C-Brains Neural Rigs x30", start: 9, end: 20 })
+      },
+      {
+        id: 5010, name: "AIC Seminar Hall", code: "AIC SEM", kind: "hall",
+        x: 494, y: 274, w: 94, h: 92, occupied_from: 10, occupied_to: 17,
+        equipment: makeFixtures(5010, { fans: 6, lights: 10, cctv: 2, projector: true, speakers: 6, acKw: 4.0, start: 9, end: 19 })
+      }
+    ]
+  }
+];
+
+// ============================================================================
+// PURE ENERGY LOGIC (Supports 24x7 critical gear like CCTV & Server Rooms)
+// ============================================================================
+function calcDailyKwh(eq) {
+  if (!eq.is_on) return 0.0;
+  return eq.power_kw * Math.max(0, eq.end_hour - eq.start_hour);
+}
+
+function calcWastedHours(eq, room) {
+  if (!eq.is_on || eq.always24x7) return 0; // CCTV & Electrical DB panels are essential 24/7
+  const onHours = Math.max(0, eq.end_hour - eq.start_hour);
+  const overlap = Math.max(
+    0,
+    Math.min(eq.end_hour, room.occupied_to) - Math.max(eq.start_hour, room.occupied_from)
+  );
+  return Math.max(0, onHours - overlap);
+}
+
+function calcRoomStats(room) {
+  const total = room.equipment.reduce((acc, e) => acc + calcDailyKwh(e), 0);
+  const wasted = room.equipment.reduce((acc, e) => acc + e.power_kw * calcWastedHours(e, room), 0);
+  const daily_kwh = Math.round(total * 100) / 100;
+  const wasted_kwh = Math.round(wasted * 100) / 100;
+  let status = "ok";
+  if (wasted_kwh >= 18) status = "critical";
+  else if (wasted_kwh >= 5) status = "warning";
+
+  return {
+    daily_kwh,
+    wasted_kwh,
+    status,
+    daily_cost_inr: Math.round(daily_kwh * TARIFF_INR),
+    wasted_cost_inr: Math.round(wasted_kwh * TARIFF_INR),
+    monthly_wasted_inr: Math.round(wasted_kwh * TARIFF_INR * 30),
+    monthly_wasted_co2: Math.round(wasted_kwh * CO2_PER_KWH * 30)
+  };
+}
+
+function getRoomHourState(room, hour) {
+  const isOccupied = hour >= room.occupied_from && hour < room.occupied_to;
+  const activeEq = room.equipment.filter((e) => e.is_on && hour >= e.start_hour && hour < e.end_hour);
+  const non24Active = activeEq.filter((e) => !e.always24x7);
+  const currentKw = activeEq.reduce((s, e) => s + e.power_kw, 0);
+  const isWastingNow = !isOccupied && non24Active.length > 0;
+  return { isOccupied, activeEq, currentKw: Math.round(currentKw * 100) / 100, isWastingNow };
+}
+
+// ============================================================================
+// VISION PRESETS (Linked to CCTV Cameras across the 5 Floors)
+// ============================================================================
+const VISION_PRESETS = [
+  {
+    id: "pynest_empty",
+    title: "CCTV-F1: ACS 12 PyNest Lab (21:30 Night)",
+    subtitle: "Floor 1 (ECE) • Unoccupied lab with Fans, Lights, Projector & 40 PCs ON",
+    roomId: 2002,
+    floorLevel: 1,
+    timestamp: "21:30 IST",
+    people: 0,
+    equipment_visible: ["Ceiling Fans (Spinning)", "LED Tube Lights", "Projector Beam", "40 Lab PCs", "Split AC"],
+    detections: [
+      { label: "tv", display: "Projector Screen", confidence: 0.95, box: [28, 12, 44, 26] },
+      { label: "laptop", display: "Workstation Row A", confidence: 0.92, box: [10, 48, 25, 28] },
+      { label: "laptop", display: "Workstation Row B", confidence: 0.90, box: [38, 48, 25, 28] },
+      { label: "tv", display: "Workstation Row C", confidence: 0.88, box: [66, 48, 24, 28] },
+    ],
+    sceneType: "empty_lab"
+  },
+  {
+    id: "vision_nest_empty",
+    title: "CCTV-F4: AIS 9 Vision Nest Lab (22:00 Night)",
+    subtitle: "Floor 4 (AIC) • GPU rigs, Ceiling Fans & AC running with 0 occupants",
+    roomId: 5008,
+    floorLevel: 4,
+    timestamp: "22:00 IST",
+    people: 0,
+    equipment_visible: ["GPU Workstations", "Ceiling Fans", "LED Lights", "Split AC"],
+    detections: [
+      { label: "tv", display: "Dual GPU Monitors", confidence: 0.94, box: [14, 42, 30, 30] },
+      { label: "laptop", display: "AI Dev Rig", confidence: 0.91, box: [54, 42, 30, 30] },
+    ],
+    sceneType: "empty_lab"
+  },
+  {
+    id: "codehub_occupied",
+    title: "CCTV-F2: ACS 8 CodeHub Lab (14:30 Afternoon)",
+    subtitle: "Floor 2 (ISE) • Active coding session with students present",
+    roomId: 3008,
+    floorLevel: 2,
+    timestamp: "14:30 IST",
+    people: 3,
+    equipment_visible: ["Ceiling Fans", "LED Lights", "Computers"],
+    detections: [
+      { label: "person", display: "Student 1", confidence: 0.96, box: [15, 26, 20, 56] },
+      { label: "person", display: "Student 2", confidence: 0.94, box: [42, 24, 21, 58] },
+      { label: "person", display: "Student 3", confidence: 0.91, box: [69, 27, 19, 55] },
+      { label: "laptop", display: "Lab PC", confidence: 0.89, box: [14, 44, 18, 20] },
+      { label: "laptop", display: "Lab PC", confidence: 0.87, box: [43, 44, 18, 20] },
+    ],
+    sceneType: "occupied_lab"
+  }
+];
+
+// ============================================================================
+// 3D COURTYARD BUILDING & INTERIOR ELECTRICAL FIXTURES COMPONENT
+// ============================================================================
+function CourtyardBuilding3D({
+  floors,
+  activeFloorFilter, // 'all' | 'exploded' | 0 | 1 | 2 | 3 | 4
+  selectedRoomId,
+  onSelectRoom,
+  currentHour,
+  cameraViewMode, // 'courtyard' | 'isometric' | 'top' | 'room_zoom'
+  showLabels
+}) {
+  const mountRef = useRef(null);
+  const sceneRef = useRef(null);
+  const cameraRef = useRef(null);
+  const floorGroupsRef = useRef({});
+  const roomObjectsRef = useRef({});
+  const spinningFansRef = useRef([]);
+  const speakerRingsRef = useRef([]);
+  const targetRef = useRef(new THREE.Vector3(0, 4, 0));
+  const sphericalRef = useRef({ radius: 42, phi: 0.92, theta: 0.55 });
+  const pointerRef = useRef({ isDown: false, startX: 0, startY: 0, moved: false });
+  const [hoveredInfo, setHoveredInfo] = useState(null);
+
+  // Convert 2D blueprint coordinates (600x380) to 3D world coordinates (-24..+24, -15.2..+15.2)
+  const SCALE = 0.08;
+  const toWorldX = (x, w = 0) => (x + w / 2 - 300) * SCALE;
+  const toWorldZ = (y, h = 0) => (y + h / 2 - 190) * SCALE;
+
+  useEffect(() => {
+    const container = mountRef.current;
+    if (!container) return;
+
+    const width = container.clientWidth || 860;
+    const height = container.clientHeight || 560;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x060b14);
+    scene.fog = new THREE.FogExp2(0x060b14, 0.0085);
+    sceneRef.current = scene;
+
+    const camera = new THREE.PerspectiveCamera(42, width / height, 0.1, 260);
+    cameraRef.current = camera;
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+    renderer.setSize(width, height);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    container.innerHTML = '';
+    container.appendChild(renderer.domElement);
+
+    // Lighting
+    const ambient = new THREE.AmbientLight(0xdbeafe, 0.78);
+    scene.add(ambient);
+
+    const sunLight = new THREE.DirectionalLight(0xfef08a, 1.35);
+    sunLight.position.set(28, 46, 26);
+    sunLight.castShadow = true;
+    sunLight.shadow.mapSize.width = 2048;
+    sunLight.shadow.mapSize.height = 2048;
+    scene.add(sunLight);
+
+    const courtyardLight = new THREE.PointLight(0x38bdf8, 0.9, 50);
+    courtyardLight.position.set(3.4, 14, 0);
+    scene.add(courtyardLight);
+
+    // Base Campus Ground
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(90, 70),
+      new THREE.MeshStandardMaterial({ color: 0x070d19, roughness: 0.9 })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -0.15;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    const grid = new THREE.GridHelper(84, 42, 0x0ea5e9, 0x1e293b);
+    grid.position.y = -0.12;
+    grid.material.opacity = 0.28;
+    grid.material.transparent = true;
+    scene.add(grid);
+
+    // Build all 5 Floors
+    floorGroupsRef.current = {};
+    roomObjectsRef.current = {};
+    spinningFansRef.current = [];
+    speakerRingsRef.current = [];
+
+    const FLOOR_HEIGHT = 3.2;
+
+    INITIAL_FLOORS.forEach((floorData) => {
+      const fGroup = new THREE.Group();
+      fGroup.position.y = floorData.level * FLOOR_HEIGHT;
+      scene.add(fGroup);
+      floorGroupsRef.current[floorData.level] = fGroup;
+
+      // 1. Floor Concrete Slab with Central Courtyard Cutout
+      // We create 4 slab strips around the central courtyard void (x: 325..445, y: 85..285)
+      const slabMat = new THREE.MeshStandardMaterial({
+        color: 0x0f292e, // Rich architectural teal matching the 2D floor plans!
+        roughness: 0.75,
+        metalness: 0.1
+      });
+
+      const addSlabPiece = (bx, by, bw, bh) => {
+        const geo = new THREE.BoxGeometry(bw * SCALE, 0.18, bh * SCALE);
+        const mesh = new THREE.Mesh(geo, slabMat);
+        mesh.position.set(toWorldX(bx, bw), 0.09, toWorldZ(by, bh));
+        mesh.receiveShadow = true;
+        fGroup.add(mesh);
+      };
+
+      // North Wing, South Wing, West Wing, East Wing, and Center Bridge
+      addSlabPiece(0, 0, 600, 90);     // North corridor + rooms
+      addSlabPiece(0, 285, 600, 95);   // South corridor + rooms
+      addSlabPiece(0, 90, 320, 195);   // West + Inner Left block
+      addSlabPiece(445, 90, 155, 195); // East wing
+
+      // If Ground Floor (level 0), fill the Courtyard with the tiered Amphitheater Steps & Badminton Court from the photo!
+      if (floorData.level === 0) {
+        const courtSlab = new THREE.Mesh(
+          new THREE.BoxGeometry(135 * SCALE, 0.16, 195 * SCALE),
+          new THREE.MeshStandardMaterial({ color: 0x134e4a, roughness: 0.6 })
+        );
+        courtSlab.position.set(toWorldX(315, 135), 0.08, toWorldZ(90, 195));
+        fGroup.add(courtSlab);
+
+        // Tiered Grey Stone Amphitheater Steps (seen at bottom of campus courtyard photo)
+        const stepMat = new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: 0.8 });
+        for (let s = 0; s < 6; s++) {
+          const stepMesh = new THREE.Mesh(
+            new THREE.BoxGeometry(9.6, 0.22, 0.65),
+            stepMat
+          );
+          stepMesh.position.set(toWorldX(320, 125), 0.2 + s * 0.18, toWorldZ(92 + s * 7, 8));
+          fGroup.add(stepMesh);
+        }
+      }
+
+      // 2. White Cylindrical Courtyard Pillars & Corridor Glass/Metal Railings (Matching the Campus Photo!)
+      const pillarMat = new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.35 });
+      const pillarGeo = new THREE.CylinderGeometry(0.16, 0.16, FLOOR_HEIGHT - 0.18, 12);
+
+      // Courtyard perimeter coordinates
+      const courtyardPillars = [
+        [320, 88], [350, 88], [380, 88], [410, 88], [442, 88],
+        [320, 284], [350, 284], [380, 284], [410, 284], [442, 284],
+        [320, 125], [320, 165], [320, 205], [320, 245],
+        [442, 125], [442, 165], [442, 205], [442, 245]
+      ];
+      courtyardPillars.forEach(([px, py]) => {
+        const pMesh = new THREE.Mesh(pillarGeo, pillarMat);
+        pMesh.position.set(toWorldX(px), FLOOR_HEIGHT / 2, toWorldZ(py));
+        fGroup.add(pMesh);
+      });
+
+      // Corridor Parapet / Railing facing the central courtyard
+      if (floorData.level > 0) {
+        const railMat = new THREE.MeshPhysicalMaterial({
+          color: 0xcbd5e1,
+          transparent: true,
+          opacity: 0.55,
+          roughness: 0.2
+        });
+        const nRail = new THREE.Mesh(new THREE.BoxGeometry(124 * SCALE, 0.85, 0.08), railMat);
+        nRail.position.set(toWorldX(320, 124), 0.55, toWorldZ(88));
+        fGroup.add(nRail);
+
+        const sRail = new THREE.Mesh(new THREE.BoxGeometry(124 * SCALE, 0.85, 0.08), railMat);
+        sRail.position.set(toWorldX(320, 124), 0.55, toWorldZ(284));
+        fGroup.add(sRail);
+
+        const wRail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.85, 196 * SCALE), railMat);
+        wRail.position.set(toWorldX(320), 0.55, toWorldZ(88, 196));
+        fGroup.add(wRail);
+
+        const eRail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.85, 196 * SCALE), railMat);
+        eRail.position.set(toWorldX(442), 0.55, toWorldZ(88, 196));
+        fGroup.add(eRail);
+      }
+
+      // If Top Floor (Floor 4 - AIC), add Rooftop Solar Array truss seen at the top of the photo!
+      if (floorData.level === 4) {
+        const solarMat = new THREE.MeshStandardMaterial({
+          color: 0x1d4ed8,
+          emissive: 0x1e3a8a,
+          emissiveIntensity: 0.3,
+          metalness: 0.6,
+          roughness: 0.25
+        });
+        for (let i = 0; i < 6; i++) {
+          const panel = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.06, 0.9), solarMat);
+          panel.position.set(toWorldX(332 + i * 18), FLOOR_HEIGHT + 0.35, toWorldZ(55));
+          panel.rotation.x = 0.35;
+          fGroup.add(panel);
+        }
+      }
+
+      // 3. Build Every Room + Its Detailed 3D Interior Electrical Fixtures!
+      floorData.rooms.forEach((room) => {
+        const rw = room.w * SCALE;
+        const rd = room.h * SCALE;
+        const rh = 2.55;
+        const rx = toWorldX(room.x, room.w);
+        const rz = toWorldZ(room.y, room.h);
+
+        const rGroup = new THREE.Group();
+        rGroup.position.set(rx, 0.18, rz);
+        fGroup.add(rGroup);
+
+        // Room Floor Tile (Colored by energy status)
+        const floorTileGeo = new THREE.BoxGeometry(rw - 0.12, 0.08, rd - 0.12);
+        const floorTileMat = new THREE.MeshStandardMaterial({
+          color: 0x0d9488,
+          emissive: 0x0f766e,
+          emissiveIntensity: 0.35,
+          roughness: 0.4
+        });
+        const floorTile = new THREE.Mesh(floorTileGeo, floorTileMat);
+        floorTile.position.y = 0.04;
+        floorTile.userData = { roomId: room.id, roomName: room.name, floorLevel: floorData.level };
+        rGroup.add(floorTile);
+
+        // Cutaway Architectural Walls (Gold/Beige top trim matching the 2D floor plan walls!)
+        const wallGeo = new THREE.BoxGeometry(rw - 0.08, rh, rd - 0.08);
+        const wallMat = new THREE.MeshPhysicalMaterial({
+          color: 0x115e59,
+          transparent: true,
+          opacity: 0.26,
+          roughness: 0.2,
+          depthWrite: false
+        });
+        const wallShell = new THREE.Mesh(wallGeo, wallMat);
+        wallShell.position.y = rh / 2;
+        wallShell.userData = { roomId: room.id, roomName: room.name, floorLevel: floorData.level };
+        rGroup.add(wallShell);
+
+        // Gold Blueprint Border Outline around Room
+        const edgeGeo = new THREE.EdgesGeometry(wallGeo);
+        const edgeMat = new THREE.LineBasicMaterial({
+          color: 0xd6c79c, // Exact gold-beige wall trim from the reference images!
+          transparent: true,
+          opacity: 0.85
+        });
+        const edgeWire = new THREE.LineSegments(edgeGeo, edgeMat);
+        edgeWire.position.y = rh / 2;
+        rGroup.add(edgeWire);
+
+        // ====================================================================
+        // INTERIOR 3D ELECTRICAL & IOT APPLIANCES
+        // ====================================================================
+        const fixturesGroup = new THREE.Group();
+        rGroup.add(fixturesGroup);
+
+        const fanSpinners = [];
+        const lightMeshes = [];
+        const projectorConeMeshes = [];
+        const cctvConeMeshes = [];
+        const speakerRingMeshes = [];
+        const acMeshes = [];
+        const pcScreenMeshes = [];
+
+        // A. 3D CEILING FANS (Motor Hub + Downrod + 3 Spinning Blades)
+        const numFans = rw > 8 ? 3 : rw > 4.5 ? 2 : 1;
+        for (let f = 0; f < numFans; f++) {
+          const fx = numFans === 1 ? 0 : (f - (numFans - 1) / 2) * (rw / (numFans + 0.4));
+          const fanMount = new THREE.Group();
+          fanMount.position.set(fx, rh - 0.25, 0);
+
+          const rod = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.03, 0.03, 0.3, 8),
+            new THREE.MeshStandardMaterial({ color: 0xe2e8f0 })
+          );
+          rod.position.y = 0.12;
+          fanMount.add(rod);
+
+          const rotor = new THREE.Group();
+          const hub = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.18, 0.18, 0.08, 12),
+            new THREE.MeshStandardMaterial({ color: 0x38bdf8, metalness: 0.5 })
+          );
+          rotor.add(hub);
+
+          for (let b = 0; b < 3; b++) {
+            const blade = new THREE.Mesh(
+              new THREE.BoxGeometry(0.75, 0.02, 0.14),
+              new THREE.MeshStandardMaterial({ color: 0xf8fafc })
+            );
+            blade.rotation.y = (b * Math.PI * 2) / 3;
+            blade.position.set(Math.cos(blade.rotation.y) * 0.42, 0, Math.sin(blade.rotation.y) * 0.42);
+            rotor.add(blade);
+          }
+
+          fanMount.add(rotor);
+          fixturesGroup.add(fanMount);
+          fanSpinners.push(rotor);
+          spinningFansRef.current.push({ rotor, roomId: room.id });
+        }
+
+        // B. 3D LED TUBE LIGHT BARS ON CEILING
+        const numLights = 2;
+        for (let l = 0; l < numLights; l++) {
+          const lz = (l === 0 ? -1 : 1) * Math.min(0.85, rd * 0.26);
+          const tubeMat = new THREE.MeshStandardMaterial({
+            color: 0xfef9c3,
+            emissive: 0xfef08a,
+            emissiveIntensity: 0.95
+          });
+          const tube = new THREE.Mesh(
+            new THREE.BoxGeometry(Math.min(rw * 0.65, 3.6), 0.04, 0.09),
+            tubeMat
+          );
+          tube.position.set(0, rh - 0.06, lz);
+          fixturesGroup.add(tube);
+          lightMeshes.push(tube);
+        }
+
+        // C. 3D CCTV CAMERA IN CORNER + TRANSLUCENT CYAN FIELD-OF-VIEW CONE
+        const cctvGroup = new THREE.Group();
+        cctvGroup.position.set(-rw / 2 + 0.25, rh - 0.22, -rd / 2 + 0.25);
+
+        const camBody = new THREE.Mesh(
+          new THREE.SphereGeometry(0.14, 10, 10),
+          new THREE.MeshStandardMaterial({ color: 0xf8fafc })
+        );
+        cctvGroup.add(camBody);
+
+        const camLed = new THREE.Mesh(
+          new THREE.SphereGeometry(0.05, 8, 8),
+          new THREE.MeshBasicMaterial({ color: 0xef4444 })
+        );
+        camLed.position.set(0.08, -0.04, 0.08);
+        cctvGroup.add(camLed);
+
+        // CCTV Vision Frustum Cone
+        const fovConeGeo = new THREE.ConeGeometry(0.65, 1.45, 12, 1, true);
+        const fovConeMat = new THREE.MeshBasicMaterial({
+          color: 0x06b6d4,
+          transparent: true,
+          opacity: 0.16,
+          side: THREE.DoubleSide,
+          depthWrite: false
+        });
+        const fovCone = new THREE.Mesh(fovConeGeo, fovConeMat);
+        fovCone.rotation.x = Math.PI / 2.6;
+        fovCone.rotation.z = -Math.PI / 4;
+        fovCone.position.set(0.45, -0.38, 0.45);
+        cctvGroup.add(fovCone);
+        cctvConeMeshes.push(fovCone);
+        fixturesGroup.add(cctvGroup);
+
+        // D. 3D CEILING PROJECTOR + LIGHT BEAM + PROJECTION SCREEN (if room has projector)
+        const hasProjector = room.equipment.some((e) => e.kind === 'projector');
+        if (hasProjector) {
+          const projBox = new THREE.Mesh(
+            new THREE.BoxGeometry(0.38, 0.14, 0.32),
+            new THREE.MeshStandardMaterial({ color: 0xe2e8f0 })
+          );
+          projBox.position.set(0, rh - 0.26, 0.15);
+          fixturesGroup.add(projBox);
+
+          // Glowing Projection Screen on Wall
+          const screenMat = new THREE.MeshStandardMaterial({
+            color: 0x38bdf8,
+            emissive: 0x0284c7,
+            emissiveIntensity: 0.75
+          });
+          const screenMesh = new THREE.Mesh(
+            new THREE.BoxGeometry(Math.min(1.6, rw * 0.48), 0.95, 0.05),
+            screenMat
+          );
+          screenMesh.position.set(0, rh * 0.55, -rd / 2 + 0.12);
+          fixturesGroup.add(screenMesh);
+
+          // Translucent Projector Light Beam Cone
+          const beamGeo = new THREE.ConeGeometry(0.7, 1.35, 16, 1, true);
+          const beamMat = new THREE.MeshBasicMaterial({
+            color: 0x38bdf8,
+            transparent: true,
+            opacity: 0.22,
+            side: THREE.DoubleSide,
+            depthWrite: false
+          });
+          const beamMesh = new THREE.Mesh(beamGeo, beamMat);
+          beamMesh.rotation.x = Math.PI / 2;
+          beamMesh.position.set(0, rh * 0.62, -rd / 4);
+          fixturesGroup.add(beamMesh);
+          projectorConeMeshes.push(beamMesh, screenMesh);
+        }
+
+        // E. 3D PA ACOUSTIC WALL SPEAKERS + SOUND WAVE RINGS
+        const hasSpeakers = room.equipment.some((e) => e.kind === 'speaker');
+        if (hasSpeakers) {
+          [-1, 1].forEach((side) => {
+            const spk = new THREE.Mesh(
+              new THREE.BoxGeometry(0.18, 0.32, 0.16),
+              new THREE.MeshStandardMaterial({ color: 0x1e293b })
+            );
+            spk.position.set(side * (rw / 2 - 0.22), rh * 0.72, -rd / 4);
+            fixturesGroup.add(spk);
+
+            const waveGeo = new THREE.RingGeometry(0.12, 0.2, 16);
+            const waveMat = new THREE.MeshBasicMaterial({
+              color: 0xa855f7,
+              side: THREE.DoubleSide,
+              transparent: true,
+              opacity: 0.65
+            });
+            const wave = new THREE.Mesh(waveGeo, waveMat);
+            wave.rotation.y = Math.PI / 2;
+            wave.position.set(side * (rw / 2 - 0.32), rh * 0.72, -rd / 4);
+            fixturesGroup.add(wave);
+            speakerRingMeshes.push(wave);
+            speakerRingsRef.current.push({ wave, roomId: room.id });
+          });
+        }
+
+        // F. 3D WALL-MOUNTED SPLIT AC UNIT
+        const hasAc = room.equipment.some((e) => e.kind === 'ac');
+        if (hasAc) {
+          const acMat = new THREE.MeshStandardMaterial({
+            color: 0xf8fafc,
+            emissive: 0x0ea5e9,
+            emissiveIntensity: 0.35
+          });
+          const acUnit = new THREE.Mesh(
+            new THREE.BoxGeometry(0.95, 0.26, 0.22),
+            acMat
+          );
+          acUnit.position.set(0, rh - 0.35, rd / 2 - 0.16);
+          fixturesGroup.add(acUnit);
+          acMeshes.push(acUnit);
+        }
+
+        // G. 3D COMPUTER WORKSTATIONS / LAB DESKS
+        const hasPc = room.equipment.some((e) => e.kind === 'computer');
+        if (hasPc) {
+          const cols = Math.min(4, Math.max(2, Math.floor(rw / 1.4)));
+          for (let c = 0; c < cols; c++) {
+            const dx = (c - (cols - 1) / 2) * 1.1;
+            const desk = new THREE.Mesh(
+              new THREE.BoxGeometry(0.85, 0.45, 0.5),
+              new THREE.MeshStandardMaterial({ color: 0x334155 })
+            );
+            desk.position.set(dx, 0.25, 0.2);
+            fixturesGroup.add(desk);
+
+            const monitorMat = new THREE.MeshStandardMaterial({
+              color: 0x38bdf8,
+              emissive: 0x0284c7,
+              emissiveIntensity: 0.85
+            });
+            const monitor = new THREE.Mesh(
+              new THREE.BoxGeometry(0.52, 0.34, 0.05),
+              monitorMat
+            );
+            monitor.position.set(dx, 0.64, 0.15);
+            fixturesGroup.add(monitor);
+            pcScreenMeshes.push(monitor);
+          }
+        }
+
+        // H. 3D ELECTRICAL DISTRIBUTION DB PANEL & SMART METER ON WALL
+        const dbBox = new THREE.Mesh(
+          new THREE.BoxGeometry(0.1, 0.42, 0.32),
+          new THREE.MeshStandardMaterial({
+            color: 0xf59e0b,
+            emissive: 0xd97706,
+            emissiveIntensity: 0.5
+          })
+        );
+        dbBox.position.set(rw / 2 - 0.12, rh * 0.48, rd / 2 - 0.35);
+        fixturesGroup.add(dbBox);
+
+        roomObjectsRef.current[room.id] = {
+          rGroup,
+          floorTile,
+          wallShell,
+          edgeWire,
+          fanSpinners,
+          lightMeshes,
+          projectorConeMeshes,
+          cctvConeMeshes,
+          speakerRingMeshes,
+          acMeshes,
+          pcScreenMeshes,
+          worldPos: new THREE.Vector3(rx, floorData.level * FLOOR_HEIGHT + 1.2, rz)
+        };
+      });
+    });
+
+    const updateCamera = () => {
+      const { radius, phi, theta } = sphericalRef.current;
+      const t = targetRef.current;
+      camera.position.x = t.x + radius * Math.sin(phi) * Math.sin(theta);
+      camera.position.y = t.y + radius * Math.cos(phi);
+      camera.position.z = t.z + radius * Math.sin(phi) * Math.cos(theta);
+      camera.lookAt(t);
+    };
+    updateCamera();
+
+    // Pointer & Raycaster Controls
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+
+    const getClickableMeshes = () => {
+      const list = [];
+      Object.values(roomObjectsRef.current).forEach((obj) => {
+        if (obj.rGroup.parent && obj.rGroup.parent.visible) {
+          list.push(obj.floorTile, obj.wallShell);
+        }
+      });
+      return list;
+    };
+
+    const onPointerDown = (e) => {
+      pointerRef.current = { isDown: true, startX: e.clientX, startY: e.clientY, moved: false };
+    };
+
+    const onPointerMove = (e) => {
+      const rect = renderer.domElement.getBoundingClientRect();
+      mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+      if (pointerRef.current.isDown) {
+        const dx = e.clientX - pointerRef.current.startX;
+        const dy = e.clientY - pointerRef.current.startY;
+        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) pointerRef.current.moved = true;
+
+        sphericalRef.current.theta -= dx * 0.0075;
+        sphericalRef.current.phi = Math.max(0.2, Math.min(Math.PI / 2.1, sphericalRef.current.phi - dy * 0.0065));
+        pointerRef.current.startX = e.clientX;
+        pointerRef.current.startY = e.clientY;
+        updateCamera();
+        return;
+      }
+
+      raycaster.setFromCamera(mouse, camera);
+      const hits = raycaster.intersectObjects(getClickableMeshes(), false);
+      if (hits.length > 0) {
+        const data = hits[0].object.userData;
+        renderer.domElement.style.cursor = 'pointer';
+        setHoveredInfo({
+          roomId: data.roomId,
+          roomName: data.roomName,
+          floorLevel: data.floorLevel,
+          x: e.clientX - rect.left,
+          y: e.clientY - rect.top
+        });
+      } else {
+        renderer.domElement.style.cursor = 'grab';
+        setHoveredInfo(null);
+      }
+    };
+
+    const onPointerUp = (e) => {
+      if (!pointerRef.current.isDown) return;
+      const moved = pointerRef.current.moved;
+      pointerRef.current.isDown = false;
+      if (!moved) {
+        const rect = renderer.domElement.getBoundingClientRect();
+        mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        raycaster.setFromCamera(mouse, camera);
+        const hits = raycaster.intersectObjects(getClickableMeshes(), false);
+        if (hits.length > 0) {
+          onSelectRoom(hits[0].object.userData.roomId);
+        }
+      }
+    };
+
+    const onWheel = (e) => {
+      e.preventDefault();
+      sphericalRef.current.radius = Math.max(10, Math.min(72, sphericalRef.current.radius + e.deltaY * 0.03));
+      updateCamera();
+    };
+
+    const dom = renderer.domElement;
+    dom.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    dom.addEventListener('wheel', onWheel, { passive: false });
+
+    const onResize = () => {
+      if (!container) return;
+      camera.aspect = container.clientWidth / container.clientHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(container.clientWidth, container.clientHeight);
+    };
+    window.addEventListener('resize', onResize);
+
+    // Animation Loop (Spins 3D Ceiling Fans & Pulses Speaker Sound Waves!)
+    let frameId;
+    const clock = new THREE.Clock();
+    const animate = () => {
+      frameId = requestAnimationFrame(animate);
+      const elapsed = clock.getElapsedTime();
+
+      spinningFansRef.current.forEach((item) => {
+        if (item.rotor.userData.spinning) {
+          item.rotor.rotation.y -= 0.18;
+        }
+      });
+
+      speakerRingsRef.current.forEach((item) => {
+        if (item.wave.userData.active) {
+          const s = 1 + 0.45 * Math.sin(elapsed * 6);
+          item.wave.scale.set(s, s, 1);
+          item.wave.material.opacity = 0.25 + 0.35 * Math.sin(elapsed * 6);
+        } else {
+          item.wave.material.opacity = 0;
+        }
+      });
+
+      renderer.render(scene, camera);
+    };
+    animate();
+
+    return () => {
+      cancelAnimationFrame(frameId);
+      dom.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      dom.removeEventListener('wheel', onWheel);
+      window.removeEventListener('resize', onResize);
+      renderer.dispose();
+    };
+  }, []);
+
+  // Synchronize Floor Visibility, Exploded Stacking, Room Status Colors & Live Appliance States!
+  useEffect(() => {
+    const BASE_H = 3.2;
+    const EXPLODED_H = 6.2;
+
+    floors.forEach((f) => {
+      const fGroup = floorGroupsRef.current[f.level];
+      if (!fGroup) return;
+
+      if (activeFloorFilter === 'all') {
+        fGroup.visible = true;
+        fGroup.position.y = f.level * BASE_H;
+      } else if (activeFloorFilter === 'exploded') {
+        fGroup.visible = true;
+        fGroup.position.y = f.level * EXPLODED_H;
+      } else {
+        fGroup.visible = f.level === Number(activeFloorFilter);
+        fGroup.position.y = 0;
+      }
+
+      f.rooms.forEach((room) => {
+        const obj = roomObjectsRef.current[room.id];
+        if (!obj) return;
+
+        const stats = calcRoomStats(room);
+        const hourState = getRoomHourState(room, currentHour);
+        const isSelected = room.id === selectedRoomId;
+
+        // Color room floor tile & walls based on energy waste status
+        let tileHex = 0x0d9488; // teal-emerald optimal
+        let wallHex = 0x115e59;
+        if (stats.status === 'critical') {
+          tileHex = 0xdc2626;
+          wallHex = 0x991b1b;
+        } else if (stats.status === 'warning' || hourState.isWastingNow) {
+          tileHex = 0xd97706;
+          wallHex = 0x92400e;
+        }
+
+        obj.floorTile.material.color.setHex(tileHex);
+        obj.floorTile.material.emissive.setHex(tileHex);
+        obj.floorTile.material.emissiveIntensity = isSelected ? 0.85 : 0.35;
+
+        obj.wallShell.material.color.setHex(wallHex);
+        obj.wallShell.material.opacity = isSelected ? 0.42 : 0.22;
+
+        obj.edgeWire.material.color.setHex(isSelected ? 0x22d3ee : 0xd6c79c);
+
+        // Check each appliance state at currentHour
+        const isEqActive = (kind) =>
+          room.equipment.some(
+            (e) => e.kind === kind && e.is_on && currentHour >= e.start_hour && currentHour < e.end_hour
+          );
+
+        const fansOn = isEqActive('fan');
+        const lightsOn = isEqActive('light');
+        const projOn = isEqActive('projector');
+        const spkOn = isEqActive('speaker');
+        const acOn = isEqActive('ac');
+        const pcOn = isEqActive('computer');
+
+        obj.fanSpinners.forEach((r) => {
+          r.userData.spinning = fansOn;
+        });
+
+        obj.lightMeshes.forEach((m) => {
+          m.material.color.setHex(lightsOn ? 0xfef9c3 : 0x334155);
+          m.material.emissiveIntensity = lightsOn ? 1.0 : 0.0;
+        });
+
+        obj.projectorConeMeshes.forEach((m) => {
+          m.visible = projOn;
+        });
+
+        obj.speakerRingMeshes.forEach((w) => {
+          w.userData.active = spkOn;
+        });
+
+        obj.acMeshes.forEach((m) => {
+          m.material.emissiveIntensity = acOn ? 0.65 : 0.0;
+        });
+
+        obj.pcScreenMeshes.forEach((m) => {
+          m.material.color.setHex(pcOn ? 0x38bdf8 : 0x1e293b);
+          m.material.emissiveIntensity = pcOn ? 0.9 : 0.0;
+        });
+      });
+    });
+  }, [floors, activeFloorFilter, selectedRoomId, currentHour]);
+
+  // Camera Preset & Room Zoom Handler
+  useEffect(() => {
+    if (!cameraRef.current) return;
+    if (cameraViewMode === 'courtyard') {
+      // Looks across the central courtyard & amphitheater steps just like the uploaded photo!
+      targetRef.current.set(5.5, 6.5, -2.5);
+      sphericalRef.current = { radius: 22, phi: 1.18, theta: 0.02 };
+    } else if (cameraViewMode === 'isometric') {
+      targetRef.current.set(0, 4, 0);
+      sphericalRef.current = { radius: 44, phi: 0.88, theta: 0.58 };
+    } else if (cameraViewMode === 'top') {
+      targetRef.current.set(0, 0, 0);
+      sphericalRef.current = { radius: 42, phi: 0.18, theta: 0 };
+    } else if (cameraViewMode === 'room_zoom' && selectedRoomId) {
+      const obj = roomObjectsRef.current[selectedRoomId];
+      if (obj) {
+        const yPos = obj.rGroup.parent ? obj.rGroup.parent.position.y + 1.2 : 1.2;
+        targetRef.current.set(obj.rGroup.position.x, yPos, obj.rGroup.position.z);
+        sphericalRef.current = { radius: 12.5, phi: 0.72, theta: 0.45 };
+      }
+    }
+
+    const { radius, phi, theta } = sphericalRef.current;
+    const t = targetRef.current;
+    cameraRef.current.position.set(
+      t.x + radius * Math.sin(phi) * Math.sin(theta),
+      t.y + radius * Math.cos(phi),
+      t.z + radius * Math.sin(phi) * Math.cos(theta)
+    );
+    cameraRef.current.lookAt(t);
+  }, [cameraViewMode, selectedRoomId, activeFloorFilter]);
+
+  return (
+    <div className="relative w-full h-full min-h-[520px] rounded-2xl overflow-hidden border border-slate-800 bg-[#050914]">
+      <div ref={mountRef} className="w-full h-full min-h-[520px]" />
+
+      {/* Department Signage Banner Overlay (Matches Courtyard Photo Banners) */}
+      <div className="pointer-events-none absolute top-3 left-3 right-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="px-3.5 py-1.5 rounded-xl bg-slate-950/90 border border-cyan-500/40 backdrop-blur-md shadow-lg">
+          <div className="text-[10px] font-bold uppercase tracking-widest text-cyan-400">
+            {activeFloorFilter === 'all'
+              ? 'ALL 5 FLOORS • CENTRAL COURTYARD & ATRIUM VIEW'
+              : activeFloorFilter === 'exploded'
+              ? 'EXPLODED 5-FLOOR ARCHITECTURAL STACK'
+              : FLOOR_META[Number(activeFloorFilter)]?.banner}
+          </div>
+          <div className="text-xs text-slate-300 font-medium">
+            3D Interior Fixtures Active: Spinning Ceiling Fans • LED Tubes • Projectors • CCTV • PA Speakers • Split ACs • Smart DB
+          </div>
+        </div>
+
+        <div className="px-3 py-1.5 rounded-xl bg-slate-950/90 border border-slate-800 text-xs text-amber-300 font-semibold backdrop-blur-md">
+          Drag to Orbit • Scroll to Zoom Into Rooms • Click Any Room
+        </div>
+      </div>
+
+      {/* Hover Tooltip */}
+      {hoveredInfo && (
+        <div
+          className="pointer-events-none absolute z-20 px-3 py-2 rounded-xl bg-slate-900/95 border border-cyan-400/50 text-xs shadow-xl backdrop-blur-md"
+          style={{
+            left: Math.min(hoveredInfo.x + 14, 520),
+            top: Math.max(hoveredInfo.y - 44, 14)
+          }}
+        >
+          <div className="font-bold text-white">{hoveredInfo.roomName}</div>
+          <div className="text-cyan-300 text-[11px]">
+            Floor {hoveredInfo.floorLevel} • Click to inspect Fans, Lights, CCTV & Projector
+          </div>
+        </div>
+      )}
+
+      {/* Bottom Legend */}
+      <div className="pointer-events-none absolute bottom-3 left-3 flex flex-wrap items-center gap-3 px-3.5 py-2 rounded-xl bg-slate-950/90 border border-slate-800 text-[11px] backdrop-blur-md">
+        <span className="flex items-center gap-1.5 text-emerald-400">
+          <span className="w-2.5 h-2.5 rounded-full bg-emerald-400" /> Optimal Room
+        </span>
+        <span className="flex items-center gap-1.5 text-amber-400">
+          <span className="w-2.5 h-2.5 rounded-full bg-amber-400" /> After-Hours Warning
+        </span>
+        <span className="flex items-center gap-1.5 text-red-400">
+          <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-ping" /> Critical Wastage
+        </span>
+        <span className="text-slate-600">|</span>
+        <span className="text-cyan-300">Cyan Cone = CCTV FOV / Projector Beam</span>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// EXACT 2D TEAL & GOLD ARCHITECTURAL BLUEPRINT FLOOR PLAN (Matches Reference Images!)
+// ============================================================================
+function Blueprint2DFloorMap({ floorData, selectedRoomId, onSelectRoom, currentHour }) {
+  return (
+    <div className="relative w-full h-full min-h-[520px] rounded-2xl border border-slate-800 bg-[#051a1d] p-4 flex flex-col items-center justify-center overflow-hidden">
+      <div className="mb-2 text-center">
+        <div className="text-xs font-bold uppercase tracking-widest text-amber-300">
+          {FLOOR_META[floorData.level]?.banner}
+        </div>
+        <div className="text-[11px] text-slate-400">
+          Exact 2D Reference Floor Plan • Click any room to inspect its Fans, Lights, CCTV, Projector & Speakers
+        </div>
+      </div>
+
+      <svg viewBox="0 0 600 380" className="w-full max-w-[780px] h-auto select-none rounded-xl shadow-2xl border-2 border-[#d6c79c]/60 bg-[#041f24]">
+        {/* Corridor Labels matching the uploaded blueprints */}
+        <text x="382" y="80" textAnchor="middle" fill="#f8fafc" fontSize="8.5" fontWeight="700" letterSpacing="1">
+          PASSAGE / CORRIDOR
+        </text>
+        <text x="235" y="120" textAnchor="middle" fill="#f8fafc" fontSize="8.5" fontWeight="700" letterSpacing="1">
+          PASSAGE / CORRIDOR
+        </text>
+        <text x="382" y="296" textAnchor="middle" fill="#f8fafc" fontSize="8.5" fontWeight="700" letterSpacing="1">
+          PASSAGE / CORRIDOR
+        </text>
+
+        {/* Central Courtyard Void Box with White X (or Badminton Court on GF) */}
+        {floorData.level > 0 && (
+          <g>
+            <rect
+              x="325"
+              y="88"
+              width="115"
+              height="192"
+              rx="4"
+              fill="#073b42"
+              stroke="#d6c79c"
+              strokeWidth="3"
+            />
+            <rect
+              x="333"
+              y="96"
+              width="99"
+              height="176"
+              fill="none"
+              stroke="#ffffff"
+              strokeWidth="2.5"
+            />
+            <line x1="333" y1="96" x2="432" y2="272" stroke="#ffffff" strokeWidth="2.5" />
+            <line x1="432" y1="96" x2="333" y2="272" stroke="#ffffff" strokeWidth="2.5" />
+          </g>
+        )}
+
+        {/* Left Lightwell Shaft Void with X */}
+        <g>
+          <rect
+            x="78"
+            y="186"
+            width="42"
+            height="94"
+            rx="3"
+            fill="#073b42"
+            stroke="#d6c79c"
+            strokeWidth="2.5"
+          />
+          <line x1="80" y1="188" x2="118" y2="278" stroke="#ffffff" strokeWidth="2" />
+          <line x1="118" y1="188" x2="80" y2="278" stroke="#ffffff" strokeWidth="2" />
+        </g>
+
+        {/* Render Every Room on This Floor */}
+        {floorData.rooms.map((r) => {
+          const stats = calcRoomStats(r);
+          const hourState = getRoomHourState(r, currentHour);
+          const isSelected = r.id === selectedRoomId;
+
+          let fill = "#0b464c"; // Classic blueprint deep teal
+          let stroke = "#d6c79c"; // Blueprint gold border
+          if (stats.status === "critical") {
+            fill = "#69191e";
+            stroke = "#f87171";
+          } else if (stats.status === "warning") {
+            fill = "#5c3b11";
+            stroke = "#fbbf24";
+          }
+
+          return (
+            <g
+              key={r.id}
+              onClick={() => onSelectRoom(r.id)}
+              className="cursor-pointer transition-opacity hover:opacity-90"
+            >
+              <rect
+                x={r.x}
+                y={r.y}
+                width={r.w}
+                height={r.h}
+                rx="4"
+                fill={fill}
+                stroke={isSelected ? "#22d3ee" : stroke}
+                strokeWidth={isSelected ? "3.5" : "2.2"}
+              />
+
+              {/* Architectural Door Arc in Corner */}
+              <path
+                d={`M ${r.x + 12} ${r.y + r.h} A 12 12 0 0 1 ${r.x} ${r.y + r.h - 12}`}
+                fill="none"
+                stroke="#cbd5e1"
+                strokeWidth="1"
+                opacity="0.65"
+              />
+
+              {/* Room Code & Title */}
+              <text
+                x={r.x + r.w / 2}
+                y={r.y + r.h / 2 - 4}
+                textAnchor="middle"
+                fill="#ffffff"
+                fontSize={r.w < 70 ? "6.5" : "8"}
+                fontWeight="700"
+              >
+                {r.code}
+              </text>
+              <text
+                x={r.x + r.w / 2}
+                y={r.y + r.h / 2 + 7}
+                textAnchor="middle"
+                fill="#e2e8f0"
+                fontSize="6.2"
+              >
+                {r.name.length > 24 ? r.name.slice(0, 22) + '…' : r.name}
+              </text>
+              <text
+                x={r.x + r.w / 2}
+                y={r.y + r.h / 2 + 17}
+                textAnchor="middle"
+                fill={stats.wasted_kwh > 0 ? "#fca5a5" : "#6ee7b7"}
+                fontSize="6"
+                fontWeight="700"
+              >
+                {stats.daily_kwh} kWh ({stats.wasted_kwh > 0 ? `${stats.wasted_kwh} waste` : 'OK'})
+              </text>
+
+              {/* Active Wasting Pulse Indicator */}
+              {hourState.isWastingNow && (
+                <circle cx={r.x + r.w - 8} cy={r.y + 8} r="4" fill="#ef4444" />
+              )}
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+// ============================================================================
+// MAIN APPLICATION COMPONENT
+// ============================================================================
+export default function App() {
+  const [activeTab, setActiveTab] = useState('twin'); // 'twin' | 'dashboard' | 'simulator' | 'vision' | 'assistant'
+  const [twinMode, setTwinMode] = useState('3d'); // '3d' | '2d'
+  const [activeFloorFilter, setActiveFloorFilter] = useState('all'); // 'all' | 'exploded' | 0 | 1 | 2 | 3 | 4
+  const [cameraViewMode, setCameraViewMode] = useState('isometric'); // 'isometric' | 'courtyard' | 'top' | 'room_zoom'
+
+  const [floors, setFloors] = useState(INITIAL_FLOORS);
+  const [selectedRoomId, setSelectedRoomId] = useState(2002); // Default to Floor 1 ACS 12 PyNest Lab Anomaly
+  const [currentHour, setCurrentHour] = useState(21); // 21:00 Night to showcase after-hours waste
+  const [isPlayingTime, setIsPlayingTime] = useState(false);
+
+  // Vision Check State
+  const [selectedPresetId, setSelectedPresetId] = useState("pynest_empty");
+  const [visionRoomId, setVisionRoomId] = useState(2002);
+  const [customImage, setCustomImage] = useState(null);
+  const [customDetections, setCustomDetections] = useState(null);
+
+  // AI Assistant State
+  const [chatMessages, setChatMessages] = useState([
+    {
+      role: 'assistant',
+      text:
+        "Welcome to **EcoWatt 3D Multi-Floor Campus Twin**! I am monitoring all **5 floors (49 rooms & labs)** modeled on your architectural blueprints, tracking every **Ceiling Fan, LED Light, Ceiling Projector, PA Speaker, CCTV Camera, Split AC, Lab Workstation, and Electrical DB Panel**.\n\n" +
+        "Right now at **21:00 IST**, our top anomalies are:\n" +
+        "1. **Floor 1 (ECE) → ACS 12 PyNest Lab** (40 PCs, Split ACs, Fans, Lights, Projector & Speakers running until 23:00)\n" +
+        "2. **Floor 4 (AIC) → AIS 9 Vision Nest Lab** (GPU rigs, Fans, Lights & AC running until 23:00)\n" +
+        "3. **Floor 0 (GF) → A16 Auditorium** (6kW AC, Stage Projector & 6 PA Speakers left ON until 22:00)."
+    }
+  ]);
+  const [userInput, setUserInput] = useState('');
+  const [isAiLoading, setIsAiLoading] = useState(false);
+
+  useEffect(() => {
+    if (!isPlayingTime) return;
+    const timer = setInterval(() => {
+      setCurrentHour((h) => (h + 1) % 24);
+    }, 900);
+    return () => clearInterval(timer);
+  }, [isPlayingTime]);
+
+  // ============================================================================
+  // COMPUTED MULTI-FLOOR CAMPUS ANALYTICS & APPLIANCE BREAKDOWN
+  // ============================================================================
+  const campusSummary = useMemo(() => {
+    let totalDailyKwh = 0;
+    let totalWastedKwh = 0;
+    const allRooms = [];
+    const alerts = [];
+    const floorChartData = [];
+    const applianceTotals = {
+      fan: { name: "Ceiling Fans", kwh: 0, wasted: 0 },
+      light: { name: "LED Lights", kwh: 0, wasted: 0 },
+      projector: { name: "Projectors", kwh: 0, wasted: 0 },
+      speaker: { name: "PA Speakers", kwh: 0, wasted: 0 },
+      cctv: { name: "CCTV Cameras", kwh: 0, wasted: 0 },
+      ac: { name: "Split ACs", kwh: 0, wasted: 0 },
+      computer: { name: "Lab PCs & Gear", kwh: 0, wasted: 0 },
+      electrical: { name: "Smart DB Panels", kwh: 0, wasted: 0 }
+    };
+
+    floors.forEach((f) => {
+      let fDaily = 0;
+      let fWasted = 0;
+      const meta = FLOOR_META[f.level];
+
+      f.rooms.forEach((r) => {
+        const stats = calcRoomStats(r);
+        totalDailyKwh += stats.daily_kwh;
+        totalWastedKwh += stats.wasted_kwh;
+        fDaily += stats.daily_kwh;
+        fWasted += stats.wasted_kwh;
+
+        r.equipment.forEach((eq) => {
+          const eqKwh = calcDailyKwh(eq);
+          const eqWasted = eq.power_kw * calcWastedHours(eq, r);
+          if (applianceTotals[eq.kind]) {
+            applianceTotals[eq.kind].kwh += eqKwh;
+            applianceTotals[eq.kind].wasted += eqWasted;
+          }
+        });
+
+        const enriched = {
+          ...r,
+          floorLevel: f.level,
+          floorName: meta.short,
+          floorFull: meta.name,
+          stats
+        };
+        allRooms.push(enriched);
+
+        if (stats.wasted_kwh >= 2) {
+          alerts.push({
+            roomId: r.id,
+            floorLevel: f.level,
+            floorName: meta.short,
+            room: r.name,
+            code: r.code,
+            status: stats.status,
+            wasted_kwh: stats.wasted_kwh,
+            monthly_cost_inr: stats.monthly_wasted_inr,
+            occupied_window: `${r.occupied_from}:00–${r.occupied_to}:00`,
+            message: `${meta.short} • ${r.name} wastes ${stats.wasted_kwh} kWh/day (₹${stats.monthly_wasted_inr.toLocaleString('en-IN')}/mo) outside ${r.occupied_from}:00–${r.occupied_to}:00.`
+          });
+        }
+      });
+
+      floorChartData.push({
+        name: meta.short,
+        Useful_kWh: Math.round((fDaily - fWasted) * 10) / 10,
+        Wasted_kWh: Math.round(fWasted * 10) / 10
+      });
+    });
+
+    alerts.sort((a, b) => b.wasted_kwh - a.wasted_kwh);
+
+    let seedDailyKwh = 0;
+    INITIAL_FLOORS.forEach((f) =>
+      f.rooms.forEach((r) => {
+        seedDailyKwh += calcRoomStats(r).daily_kwh;
+      })
+    );
+
+    const savedDailyKwh = Math.max(0, Math.round((seedDailyKwh - totalDailyKwh) * 10) / 10);
+
+    const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const mult = [0.97, 1.01, 1.04, 0.99, 1.02, 0.35, 0.30];
+    const trendData = days.map((day, i) => ({
+      day,
+      Actual_kWh: Math.round(totalDailyKwh * mult[i]),
+      Wasted_kWh: Math.round(totalWastedKwh * mult[i])
+    }));
+
+    return {
+      totalDailyKwh: Math.round(totalDailyKwh * 10) / 10,
+      totalWastedKwh: Math.round(totalWastedKwh * 10) / 10,
+      monthlyWasteInr: Math.round(totalWastedKwh * TARIFF_INR * 30),
+      monthlyWasteCo2: Math.round(totalWastedKwh * CO2_PER_KWH * 30),
+      seedDailyKwh: Math.round(seedDailyKwh * 10) / 10,
+      savedDailyKwh,
+      savedMonthlyInr: Math.round(savedDailyKwh * TARIFF_INR * 30),
+      savedMonthlyCo2: Math.round(savedDailyKwh * CO2_PER_KWH * 30),
+      allRooms,
+      alerts,
+      floorChartData,
+      applianceChartData: Object.values(applianceTotals).map((a) => ({
+        name: a.name,
+        Total_kWh: Math.round(a.kwh * 10) / 10,
+        Wasted_kWh: Math.round(a.wasted * 10) / 10
+      })),
+      trendData
+    };
+  }, [floors]);
+
+  const selectedRoom = useMemo(
+    () => campusSummary.allRooms.find((r) => r.id === selectedRoomId) || campusSummary.allRooms[0],
+    [campusSummary, selectedRoomId]
+  );
+
+  // ============================================================================
+  // APPLIANCE & SCHEDULE MUTATION HANDLERS
+  // ============================================================================
+  const updateEquipment = (roomId, eqId, changes) => {
+    setFloors((prev) =>
+      prev.map((f) => ({
+        ...f,
+        rooms: f.rooms.map((r) => {
+          if (r.id !== roomId) return r;
+          return {
+            ...r,
+            equipment: r.equipment.map((eq) => (eq.id === eqId ? { ...eq, ...changes } : eq))
+          };
+        })
+      }))
+    );
+  };
+
+  const optimizeSingleRoom = (roomId) => {
+    setFloors((prev) =>
+      prev.map((f) => ({
+        ...f,
+        rooms: f.rooms.map((r) => {
+          if (r.id !== roomId) return r;
+          return {
+            ...r,
+            equipment: r.equipment.map((eq) =>
+              eq.always24x7
+                ? eq
+                : {
+                    ...eq,
+                    start_hour: Math.max(eq.start_hour, r.occupied_from),
+                    end_hour: Math.min(eq.end_hour, r.occupied_to)
+                  }
+            )
+          };
+        })
+      }))
+    );
+  };
+
+  const optimizeAllCampus = () => {
+    setFloors((prev) =>
+      prev.map((f) => ({
+        ...f,
+        rooms: f.rooms.map((r) => ({
+          ...r,
+          equipment: r.equipment.map((eq) =>
+            eq.always24x7
+              ? eq
+              : {
+                  ...eq,
+                  start_hour: Math.max(eq.start_hour, r.occupied_from),
+                  end_hour: Math.min(eq.end_hour, r.occupied_to)
+                }
+          )
+        }))
+      }))
+    );
+  };
+
+  const resetCampus = () => {
+    setFloors(JSON.parse(JSON.stringify(INITIAL_FLOORS)));
+  };
+
+  const getApplianceIcon = (kind) => {
+    switch (kind) {
+      case 'fan': return <Fan className="w-4 h-4 text-cyan-400 animate-spin" style={{ animationDuration: '4s' }} />;
+      case 'light': return <Lightbulb className="w-4 h-4 text-amber-300" />;
+      case 'projector': return <Tv className="w-4 h-4 text-sky-400" />;
+      case 'speaker': return <Volume2 className="w-4 h-4 text-purple-400" />;
+      case 'cctv': return <Video className="w-4 h-4 text-red-400" />;
+      case 'ac': return <Wind className="w-4 h-4 text-teal-300" />;
+      case 'computer': return <Monitor className="w-4 h-4 text-blue-400" />;
+      default: return <Cpu className="w-4 h-4 text-amber-400" />;
+    }
+  };
+
+  // Vision Check State
+  const activeVisionPreset = useMemo(
+    () => VISION_PRESETS.find((p) => p.id === selectedPresetId) || VISION_PRESETS[0],
+    [selectedPresetId]
+  );
+  const currentVisionData = customDetections || activeVisionPreset;
+  const visionLinkedRoom = campusSummary.allRooms.find((r) => r.id === Number(visionRoomId));
+  const needsVerification =
+    currentVisionData.people === 0 && currentVisionData.equipment_visible.length > 0;
+
+  // Gemini AI Handler
+  const askEcoWattAi = async (promptText, mode = 'chat') => {
+    const query = promptText || userInput.trim();
+    if (!query && mode === 'chat') return;
+
+    setChatMessages((prev) => [
+      ...prev,
+      {
+        role: 'user',
+        text: mode === 'report' ? "Generate 5-Floor Executive Energy Audit Report" : query
+      }
+    ]);
+    if (mode === 'chat') setUserInput('');
+    setIsAiLoading(true);
+
+    const top3 = campusSummary.alerts.slice(0, 4);
+    const fallbackReply =
+      mode === 'report'
+        ? `### 🏢 5-Floor College Digital Twin — Executive Energy Audit\n\n` +
+          `**1. Campus Overview**\n` +
+          `Monitoring **5 stacked floors (Ground to 4th Floor AIC)** across **${campusSummary.allRooms.length} rooms/labs**. Current daily load is **${campusSummary.totalDailyKwh} kWh/day**, with **${campusSummary.totalWastedKwh} kWh/day** wasted outside occupied hours (**₹${campusSummary.monthlyWasteInr.toLocaleString('en-IN')}/month** loss).\n\n` +
+          `**2. Top Multi-Floor Wastage Hotspots**\n` +
+          top3.map((a, i) => `${i + 1}. **${a.floorName} → ${a.room}**: Wastes **${a.wasted_kwh} kWh/day** (₹${a.monthly_cost_inr.toLocaleString('en-IN')}/mo) outside ${a.occupied_window}.`).join('\n') +
+          `\n\n**3. Appliance-Level Recommendations**\n` +
+          `• **Smart DB Relay Cutoff:** Automate ceiling fans, LED tube lights, ceiling projectors, and PA speakers to cut off at room occupancy end while keeping **IP CCTV Cameras** and **Floor 1 A35 Server Room** on 24/7.\n` +
+          `• **Projected Savings:** **₹${campusSummary.monthlyWasteInr.toLocaleString('en-IN')}/month** and **${campusSummary.monthlyWasteCo2} kg CO₂/month**.`
+        : `**Live 5-Floor Telemetry Answer:**\n\n` +
+          `• **Top Anomaly:** **${top3[0]?.floorName} — ${top3[0]?.room}** is wasting **${top3[0]?.wasted_kwh} kWh/day** (**₹${top3[0]?.monthly_cost_inr.toLocaleString('en-IN')}/month**).\n` +
+          `• **Active Appliances Involved:** Ceiling Fans, LED Tube Lights, Ceiling Projector, PA Speakers, Split AC, and Lab Workstations running past occupancy hours.\n` +
+          `• **Instant Fix:** Click **Match Occupancy** in the Room Inspector or **Auto-Optimize All 5 Floors** in the Simulator to save **₹${campusSummary.monthlyWasteInr.toLocaleString('en-IN')}/month**.`;
+
+    setTimeout(() => {
+      setChatMessages((prev) => [...prev, { role: 'assistant', text: fallbackReply }]);
+      setIsAiLoading(false);
+    }, 450);
+  };
+
+  // Determine which floor to show in 2D blueprint mode
+  const blueprintFloorLevel =
+    typeof activeFloorFilter === 'number'
+      ? activeFloorFilter
+      : selectedRoom?.floorLevel ?? 1;
+  const activeBlueprintFloor =
+    floors.find((f) => f.level === blueprintFloorLevel) || floors[1];
+
+  return (
+    <div className="min-h-screen bg-[#050912] text-slate-100 flex flex-col font-sans">
+      {/* ==================================================================== */}
+      {/* TOP HEADER BAR */}
+      {/* ==================================================================== */}
+      <header className="sticky top-0 z-30 border-b border-slate-800 bg-[#070d19]/95 backdrop-blur-xl">
+        <div className="max-w-[1480px] mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-teal-400 via-cyan-500 to-fuchsia-600 flex items-center justify-center shadow-lg shadow-cyan-500/20">
+              <Zap className="w-5 h-5 text-slate-950" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="text-lg font-bold tracking-tight text-white">
+                  EcoWatt 3D Multi-Floor Campus Twin
+                </h1>
+                <span className="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded-full bg-teal-500/20 text-teal-300 border border-teal-500/40">
+                  5 Floors • Courtyard & IoT Fixtures
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 hidden sm:block">
+                GF (Auditorium/Workshop) • F1 (ECE) • F2 (ISE & Library) • F3 (CSE) • F4 (Atal Incubation Centre)
+              </p>
+            </div>
+          </div>
+
+          {/* 5 Primary Navigation Tabs */}
+          <nav className="flex items-center gap-1 bg-slate-900 p-1 rounded-xl border border-slate-800 overflow-x-auto">
+            {[
+              { id: 'twin', label: '3D Floor & Electrical Twin', icon: Box },
+              { id: 'dashboard', label: 'Energy Dashboard', icon: LayoutDashboard },
+              { id: 'simulator', label: 'What-If Simulator', icon: Sliders },
+              { id: 'vision', label: 'CCTV & YOLOv8 Vision', icon: Video },
+              { id: 'assistant', label: 'Gemini AI Advisor', icon: Sparkles }
+            ].map((t) => {
+              const Icon = t.icon;
+              const active = activeTab === t.id;
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => setActiveTab(t.id)}
+                  className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold transition whitespace-nowrap ${
+                    active
+                      ? 'bg-gradient-to-r from-teal-500/25 to-cyan-500/25 text-cyan-300 border border-cyan-500/40'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <Icon className="w-4 h-4" />
+                  {t.label}
+                </button>
+              );
+            })}
+          </nav>
+
+          {/* Live Campus Totals Pill */}
+          <div className="hidden xl:flex items-center gap-3 px-3.5 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs">
+            <span className="text-slate-300">
+              Load: <b className="text-cyan-300">{campusSummary.totalDailyKwh} kWh/d</b>
+            </span>
+            <span className="text-slate-700">|</span>
+            <span className="text-red-400 font-semibold">
+              Waste: ₹{campusSummary.monthlyWasteInr.toLocaleString('en-IN')}/mo
+            </span>
+          </div>
+        </div>
+      </header>
+
+      {/* ==================================================================== */}
+      {/* MAIN CONTENT */}
+      {/* ==================================================================== */}
+      <main className="flex-1 max-w-[1480px] w-full mx-auto px-4 py-4">
+        {/* ================================================================== */}
+        {/* TAB 1: 3D MULTI-FLOOR COURTYARD & INTERIOR ELECTRICAL TWIN */}
+        {/* ================================================================== */}
+        {activeTab === 'twin' && (
+          <div className="space-y-4">
+            {/* Floor Switcher & View Controls Bar */}
+            <div className="p-3.5 rounded-2xl bg-slate-900/85 border border-slate-800 flex flex-wrap items-center justify-between gap-3">
+              {/* Floor Selector Pills */}
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-400 mr-1 flex items-center gap-1">
+                  <Layers className="w-3.5 h-3.5 text-cyan-400" /> Floor View:
+                </span>
+                {[
+                  { id: 'all', label: 'All 5 Floors (Building)' },
+                  { id: 'exploded', label: 'Exploded Stack' },
+                  { id: 0, label: 'GF (Audit./Workshop)' },
+                  { id: 1, label: 'F1 (ECE)' },
+                  { id: 2, label: 'F2 (ISE & Library)' },
+                  { id: 3, label: 'F3 (CSE)' },
+                  { id: 4, label: 'F4 (AIC Incubation)' }
+                ].map((fl) => (
+                  <button
+                    key={String(fl.id)}
+                    onClick={() => {
+                      setActiveFloorFilter(fl.id);
+                      if (typeof fl.id === 'number') {
+                        const firstRoom = floors.find((x) => x.level === fl.id)?.rooms[0];
+                        if (firstRoom) setSelectedRoomId(firstRoom.id);
+                      }
+                    }}
+                    className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+                      activeFloorFilter === fl.id
+                        ? 'bg-cyan-500 text-slate-950 font-bold shadow'
+                        : 'bg-slate-950 text-slate-300 hover:bg-slate-800 border border-slate-800'
+                    }`}
+                  >
+                    {fl.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* 3D vs 2D Blueprint Toggle + Camera Angles */}
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800">
+                  <button
+                    onClick={() => setTwinMode('3d')}
+                    className={`px-3 py-1 rounded-lg text-xs font-bold transition ${
+                      twinMode === '3d' ? 'bg-teal-400 text-slate-950' : 'text-slate-400'
+                    }`}
+                  >
+                    3D Interior Twin
+                  </button>
+                  <button
+                    onClick={() => setTwinMode('2d')}
+                    className={`px-3 py-1 rounded-lg text-xs font-bold transition ${
+                      twinMode === '2d' ? 'bg-amber-400 text-slate-950' : 'text-slate-400'
+                    }`}
+                  >
+                    2D Reference Blueprint
+                  </button>
+                </div>
+
+                {twinMode === '3d' && (
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => setCameraViewMode('courtyard')}
+                      className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-cyan-300 border border-cyan-500/30 font-semibold"
+                    >
+                      📸 Courtyard Photo Angle
+                    </button>
+                    <button
+                      onClick={() => setCameraViewMode('isometric')}
+                      className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-200"
+                    >
+                      3D Orbit
+                    </button>
+                    <button
+                      onClick={() => setCameraViewMode('room_zoom')}
+                      className="px-2.5 py-1.5 rounded-lg bg-fuchsia-500/20 hover:bg-fuchsia-500/30 text-xs text-fuchsia-300 border border-fuchsia-500/40 font-semibold"
+                    >
+                      🔍 Zoom Inside Room
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* 24-Hour Time Scrubber & Quick Anomaly Jump Bar */}
+            <div className="p-3 rounded-2xl bg-slate-900/70 border border-slate-800 flex flex-wrap items-center justify-between gap-4">
+              <div className="flex items-center gap-3 flex-1 min-w-[260px] max-w-md bg-slate-950 px-3.5 py-2 rounded-xl border border-slate-800">
+                <button
+                  onClick={() => setIsPlayingTime(!isPlayingTime)}
+                  className="p-1.5 rounded-lg bg-cyan-500/20 text-cyan-300"
+                >
+                  {isPlayingTime ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+                </button>
+                <div className="flex items-center gap-1.5 text-xs font-bold text-cyan-300 min-w-[85px]">
+                  {currentHour >= 7 && currentHour <= 18 ? (
+                    <Sun className="w-4 h-4 text-amber-400" />
+                  ) : (
+                    <Moon className="w-4 h-4 text-indigo-400" />
+                  )}
+                  {String(currentHour).padStart(2, '0')}:00 IST
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="23"
+                  value={currentHour}
+                  onChange={(e) => setCurrentHour(Number(e.target.value))}
+                  className="w-full accent-cyan-400 cursor-pointer"
+                />
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-slate-400">Jump to Anomaly:</span>
+                <button
+                  onClick={() => {
+                    setActiveFloorFilter(1);
+                    setSelectedRoomId(2002);
+                    setCameraViewMode('room_zoom');
+                  }}
+                  className="px-2.5 py-1 rounded-lg bg-red-500/20 border border-red-500/40 text-xs text-red-300 font-semibold hover:bg-red-500/30"
+                >
+                  F1: ACS 12 PyNest Lab
+                </button>
+                <button
+                  onClick={() => {
+                    setActiveFloorFilter(4);
+                    setSelectedRoomId(5008);
+                    setCameraViewMode('room_zoom');
+                  }}
+                  className="px-2.5 py-1 rounded-lg bg-red-500/20 border border-red-500/40 text-xs text-red-300 font-semibold hover:bg-red-500/30"
+                >
+                  F4: AIS 9 Vision Nest
+                </button>
+                <button
+                  onClick={() => {
+                    setActiveFloorFilter(0);
+                    setSelectedRoomId(1005);
+                    setCameraViewMode('room_zoom');
+                  }}
+                  className="px-2.5 py-1 rounded-lg bg-amber-500/20 border border-amber-500/40 text-xs text-amber-300 font-semibold hover:bg-amber-500/30"
+                >
+                  GF: A16 Auditorium
+                </button>
+              </div>
+            </div>
+
+            {/* Main Split Grid: 3D/2D Viewport (8 Cols) + Room Electrical & Appliance Inspector (4 Cols) */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+              <div className="lg:col-span-8 flex flex-col">
+                {twinMode === '3d' ? (
+                  <CourtyardBuilding3D
+                    floors={floors}
+                    activeFloorFilter={activeFloorFilter}
+                    selectedRoomId={selectedRoomId}
+                    onSelectRoom={(id) => setSelectedRoomId(id)}
+                    currentHour={currentHour}
+                    cameraViewMode={cameraViewMode}
+                  />
+                ) : (
+                  <Blueprint2DFloorMap
+                    floorData={activeBlueprintFloor}
+                    selectedRoomId={selectedRoomId}
+                    onSelectRoom={(id) => setSelectedRoomId(id)}
+                    currentHour={currentHour}
+                  />
+                )}
+              </div>
+
+              {/* Right Column: Room Electrical & IoT Appliance Inspector */}
+              <div className="lg:col-span-4 bg-slate-900/85 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between">
+                {selectedRoom && (
+                  <div className="space-y-4">
+                    <div className="flex items-start justify-between gap-2 border-b border-slate-800 pb-3">
+                      <div>
+                        <div className="text-xs font-bold uppercase tracking-wider text-cyan-400">
+                          {selectedRoom.floorName} • Code: {selectedRoom.code}
+                        </div>
+                        <h2 className="text-lg font-bold text-white mt-0.5">
+                          {selectedRoom.name}
+                        </h2>
+                        <div className="text-xs text-slate-400 mt-1 flex items-center gap-1.5">
+                          <Clock className="w-3.5 h-3.5 text-cyan-400" />
+                          Occupied Hours:{' '}
+                          <b className="text-slate-200">
+                            {selectedRoom.occupied_from}:00 – {selectedRoom.occupied_to}:00
+                          </b>
+                        </div>
+                      </div>
+                      <span
+                        className={`px-2.5 py-1 rounded-full text-[11px] font-bold uppercase border ${
+                          selectedRoom.stats.status === 'critical'
+                            ? 'bg-red-500/20 text-red-300 border-red-500/40'
+                            : selectedRoom.stats.status === 'warning'
+                            ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                            : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                        }`}
+                      >
+                        {selectedRoom.stats.status}
+                      </span>
+                    </div>
+
+                    {/* Room Stats */}
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+                        <div className="text-[10px] text-slate-400">Daily Load</div>
+                        <div className="text-base font-bold text-white">
+                          {selectedRoom.stats.daily_kwh} kWh
+                        </div>
+                      </div>
+                      <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+                        <div className="text-[10px] text-slate-400">Wasted/Day</div>
+                        <div className="text-base font-bold text-red-400">
+                          {selectedRoom.stats.wasted_kwh} kWh
+                        </div>
+                      </div>
+                      <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+                        <div className="text-[10px] text-slate-400">Monthly Loss</div>
+                        <div className="text-base font-bold text-amber-300">
+                          ₹{selectedRoom.stats.monthly_wasted_inr.toLocaleString('en-IN')}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Electrical Fixtures List (Fans, Lights, CCTV, Projector, Speakers, AC, PCs, DB) */}
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                          3D Room Electrical Fixtures ({selectedRoom.equipment.length})
+                        </span>
+                        {selectedRoom.stats.wasted_kwh > 0 && (
+                          <button
+                            onClick={() => optimizeSingleRoom(selectedRoom.id)}
+                            className="px-2.5 py-1 rounded-lg bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 text-xs font-bold hover:bg-cyan-500/30"
+                          >
+                            ⚡ Match Occupancy
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1">
+                        {selectedRoom.equipment.map((eq) => {
+                          const wHours = calcWastedHours(eq, selectedRoom);
+                          return (
+                            <div
+                              key={eq.id}
+                              className={`p-2.5 rounded-xl border transition ${
+                                !eq.is_on
+                                  ? 'bg-slate-950/40 border-slate-800/50 opacity-55'
+                                  : wHours > 0
+                                  ? 'bg-red-950/25 border-red-500/40'
+                                  : 'bg-slate-950 border-slate-800'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-2">
+                                  {getApplianceIcon(eq.kind)}
+                                  <div>
+                                    <div className="text-xs font-bold text-white">{eq.name}</div>
+                                    <div className="text-[10px] text-slate-400">
+                                      {eq.power_kw} kW • Schedule: {eq.start_hour}:00–{eq.end_hour}:00
+                                      {eq.always24x7 && (
+                                        <span className="ml-1.5 text-cyan-400 font-semibold">
+                                          (24/7 Essential)
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <button
+                                  onClick={() =>
+                                    updateEquipment(selectedRoom.id, eq.id, { is_on: !eq.is_on })
+                                  }
+                                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold ${
+                                    eq.is_on
+                                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                      : 'bg-slate-800 text-slate-400'
+                                  }`}
+                                >
+                                  {eq.is_on ? 'ON' : 'OFF'}
+                                </button>
+                              </div>
+
+                              {!eq.always24x7 && (
+                                <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
+                                  <label className="flex items-center justify-between bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+                                    <span className="text-slate-400">On Hr:</span>
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      max="23"
+                                      value={eq.start_hour}
+                                      onChange={(e) =>
+                                        updateEquipment(selectedRoom.id, eq.id, {
+                                          start_hour: Number(e.target.value)
+                                        })
+                                      }
+                                      className="w-10 bg-transparent text-right font-bold text-cyan-300"
+                                    />
+                                  </label>
+                                  <label className="flex items-center justify-between bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+                                    <span className="text-slate-400">Off Hr:</span>
+                                    <input
+                                      type="number"
+                                      min="1"
+                                      max="24"
+                                      value={eq.end_hour}
+                                      onChange={(e) =>
+                                        updateEquipment(selectedRoom.id, eq.id, {
+                                          end_hour: Number(e.target.value)
+                                        })
+                                      }
+                                      className="w-10 bg-transparent text-right font-bold text-cyan-300"
+                                    />
+                                  </label>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <div className="pt-3 mt-3 border-t border-slate-800 grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => {
+                      setVisionRoomId(selectedRoom.id);
+                      setActiveTab('vision');
+                    }}
+                    className="py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-cyan-300 flex items-center justify-center gap-1.5"
+                  >
+                    <Video className="w-3.5 h-3.5" /> Live CCTV Feed
+                  </button>
+                  <button
+                    onClick={optimizeAllCampus}
+                    className="py-2 px-3 rounded-xl bg-gradient-to-r from-teal-400 to-cyan-500 text-slate-950 text-xs font-bold flex items-center justify-center gap-1.5"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" /> Fix All 5 Floors
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ================================================================== */}
+        {/* TAB 2: ENERGY DASHBOARD (FLOOR BREAKDOWN & APPLIANCE BREAKDOWN) */}
+        {/* ================================================================== */}
+        {activeTab === 'dashboard' && (
+          <div className="space-y-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="p-5 rounded-2xl bg-slate-900/80 border border-slate-800">
+                <div className="text-xs text-slate-400 uppercase font-bold">5-Floor Daily Consumption</div>
+                <div className="text-2xl font-bold text-white mt-1">{campusSummary.totalDailyKwh} kWh/day</div>
+                <div className="text-xs text-cyan-400 mt-1">49 Rooms & Labs Monitored</div>
+              </div>
+              <div className="p-5 rounded-2xl bg-slate-900/80 border border-red-500/30">
+                <div className="text-xs text-red-300 uppercase font-bold">After-Hours Wastage</div>
+                <div className="text-2xl font-bold text-red-400 mt-1">{campusSummary.totalWastedKwh} kWh/day</div>
+                <div className="text-xs text-slate-400 mt-1">Fans, Lights, Projectors, ACs & PCs</div>
+              </div>
+              <div className="p-5 rounded-2xl bg-slate-900/80 border border-amber-500/30">
+                <div className="text-xs text-amber-300 uppercase font-bold">Monthly Rupee Loss</div>
+                <div className="text-2xl font-bold text-amber-300 mt-1">
+                  ₹{campusSummary.monthlyWasteInr.toLocaleString('en-IN')}/mo
+                </div>
+                <div className="text-xs text-slate-400 mt-1">Tariff ₹8/kWh</div>
+              </div>
+              <div className="p-5 rounded-2xl bg-slate-900/80 border border-fuchsia-500/30">
+                <div className="text-xs text-fuchsia-300 uppercase font-bold">Monthly CO₂ Waste</div>
+                <div className="text-2xl font-bold text-fuchsia-300 mt-1">
+                  {campusSummary.monthlyWasteCo2} kg CO₂
+                </div>
+                <div className="text-xs text-slate-400 mt-1">0.8 kg CO₂ per kWh</div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+              {/* Floor-by-Floor Useful vs Waste */}
+              <div className="p-5 rounded-2xl bg-slate-900/80 border border-slate-800">
+                <h3 className="text-base font-bold text-white mb-1">
+                  Floor-Wise Energy Breakdown (GF to 4th Floor AIC)
+                </h3>
+                <p className="text-xs text-slate-400 mb-4">
+                  Occupied Useful kWh vs Unoccupied Wasted kWh per Floor
+                </p>
+                <div className="h-72">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={campusSummary.floorChartData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                      <XAxis dataKey="name" stroke="#94a3b8" fontSize={12} />
+                      <YAxis stroke="#94a3b8" fontSize={12} />
+                      <RechartsTooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155' }} />
+                      <Legend />
+                      <Bar dataKey="Useful_kWh" name="Occupied Useful kWh" stackId="a" fill="#10b981" />
+                      <Bar dataKey="Wasted_kWh" name="After-Hours Wasted kWh" stackId="a" fill="#ef4444" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              {/* Electrical Appliance Type Breakdown */}
+              <div className="p-5 rounded-2xl bg-slate-900/80 border border-slate-800">
+                <h3 className="text-base font-bold text-white mb-1">
+                  Electrical Fixture Category Breakdown (kWh/day)
+                </h3>
+                <p className="text-xs text-slate-400 mb-4">
+                  Fans, Lights, Projectors, PA Speakers, CCTV, Split ACs, Lab PCs & Smart DBs
+                </p>
+                <div className="h-72">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={campusSummary.applianceChartData} layout="vertical">
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                      <XAxis type="number" stroke="#94a3b8" fontSize={12} />
+                      <YAxis dataKey="name" type="category" stroke="#94a3b8" fontSize={11} width={110} />
+                      <RechartsTooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155' }} />
+                      <Legend />
+                      <Bar dataKey="Total_kWh" name="Total Daily kWh" fill="#06b6d4" />
+                      <Bar dataKey="Wasted_kWh" name="Wasted kWh" fill="#f43f5e" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ================================================================== */}
+        {/* TAB 3: WHAT-IF SIMULATOR */}
+        {/* ================================================================== */}
+        {activeTab === 'simulator' && (
+          <div className="space-y-5">
+            <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-bold text-white">
+                  5-Floor Electrical Schedule Simulator
+                </h2>
+                <p className="text-xs text-slate-400">
+                  Cut off non-essential Fans, Lights, Projectors, Speakers & ACs outside occupied hours while preserving 24/7 CCTV & Server Room power.
+                </p>
+              </div>
+              <div className="flex items-center gap-2.5">
+                <button
+                  onClick={optimizeAllCampus}
+                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-teal-400 to-cyan-500 text-slate-950 font-bold text-xs"
+                >
+                  ⚡ Auto-Optimize All 5 Floors
+                </button>
+                <button
+                  onClick={resetCampus}
+                  className="px-3.5 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold flex items-center gap-1"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" /> Reset Baseline
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="p-4 rounded-2xl bg-emerald-950/25 border border-emerald-500/30">
+                <div className="text-xs text-emerald-300">Daily Energy Saved</div>
+                <div className="text-2xl font-bold text-emerald-400 mt-1">
+                  {campusSummary.savedDailyKwh} kWh/day
+                </div>
+              </div>
+              <div className="p-4 rounded-2xl bg-cyan-950/25 border border-cyan-500/30">
+                <div className="text-xs text-cyan-300">Monthly Rupee Savings</div>
+                <div className="text-2xl font-bold text-cyan-300 mt-1">
+                  ₹{campusSummary.savedMonthlyInr.toLocaleString('en-IN')} / mo
+                </div>
+              </div>
+              <div className="p-4 rounded-2xl bg-fuchsia-950/25 border border-fuchsia-500/30">
+                <div className="text-xs text-fuchsia-300">CO₂ Reduction</div>
+                <div className="text-2xl font-bold text-fuchsia-300 mt-1">
+                  {campusSummary.savedMonthlyCo2} kg CO₂ / mo
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              {campusSummary.alerts.map((a) => (
+                <div
+                  key={a.roomId}
+                  className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 flex flex-wrap items-center justify-between gap-3"
+                >
+                  <div>
+                    <div className="text-sm font-bold text-white">
+                      {a.floorName} → {a.room} ({a.code})
+                    </div>
+                    <div className="text-xs text-slate-400">{a.message}</div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => optimizeSingleRoom(a.roomId)}
+                      className="px-3 py-1.5 rounded-xl bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-xs font-bold"
+                    >
+                      Fix Room Schedule
+                    </button>
+                    <button
+                      onClick={() => {
+                        setActiveFloorFilter(a.floorLevel);
+                        setSelectedRoomId(a.roomId);
+                        setCameraViewMode('room_zoom');
+                        setActiveTab('twin');
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-slate-800 text-cyan-300 text-xs font-bold"
+                    >
+                      Inspect in 3D
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ================================================================== */}
+        {/* TAB 4: CCTV & YOLOv8 VISION CHECK */}
+        {/* ================================================================== */}
+        {activeTab === 'vision' && (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <div className="lg:col-span-7 space-y-4">
+              <div className="p-5 rounded-2xl bg-slate-900/85 border border-slate-800 space-y-4">
+                <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                  <Video className="w-5 h-5 text-red-400" />
+                  Campus IP CCTV Network & YOLOv8 Occupancy Verification
+                </h2>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  {VISION_PRESETS.map((p) => (
+                    <button
+                      key={p.id}
+                      onClick={() => {
+                        setSelectedPresetId(p.id);
+                        setVisionRoomId(p.roomId);
+                        setCustomImage(null);
+                        setCustomDetections(null);
+                      }}
+                      className={`p-3 rounded-xl border text-left transition ${
+                        selectedPresetId === p.id
+                          ? 'bg-cyan-950/40 border-cyan-400'
+                          : 'bg-slate-950 border-slate-800'
+                      }`}
+                    >
+                      <div className="text-xs font-bold text-white truncate">{p.title}</div>
+                      <div className="text-[10px] text-slate-400 mt-0.5 line-clamp-1">{p.subtitle}</div>
+                    </button>
+                  ))}
+                </div>
+
+                {/* Simulated CCTV Interior Room View with Fans, Tube Lights, Projector & Desks */}
+                <div className="relative w-full aspect-video rounded-xl overflow-hidden bg-[#050a14] border border-slate-800">
+                  <svg viewBox="0 0 800 450" className="w-full h-full">
+                    <rect width="800" height="450" fill="#0b1528" />
+                    {/* Ceiling Fans & Glowing Tube Lights in CCTV Frame */}
+                    <line x1="250" y1="0" x2="250" y2="45" stroke="#cbd5e1" strokeWidth="4" />
+                    <ellipse cx="250" cy="48" rx="65" ry="10" fill="#38bdf8" opacity="0.75" />
+                    <line x1="550" y1="0" x2="550" y2="45" stroke="#cbd5e1" strokeWidth="4" />
+                    <ellipse cx="550" cy="48" rx="65" ry="10" fill="#38bdf8" opacity="0.75" />
+                    {/* LED Tube Lights */}
+                    <rect x="120" y="18" width="160" height="8" rx="4" fill="#fef08a" />
+                    <rect x="520" y="18" width="160" height="8" rx="4" fill="#fef08a" />
+                    {/* Glowing Projector Screen */}
+                    <rect x="240" y="65" width="320" height="110" rx="6" fill="#0284c7" stroke="#e2e8f0" strokeWidth="4" />
+                    {/* Lab Workstations */}
+                    <rect x="80" y="235" width="180" height="95" rx="6" fill="#0ea5e9" />
+                    <rect x="310" y="235" width="180" height="95" rx="6" fill="#0ea5e9" />
+                    <rect x="540" y="235" width="180" height="95" rx="6" fill="#0ea5e9" />
+                    {activeVisionPreset.sceneType === 'occupied_lab' && (
+                      <g>
+                        <circle cx="170" cy="210" r="28" fill="#fde047" />
+                        <rect x="130" y="242" width="80" height="130" rx="14" fill="#10b981" />
+                        <circle cx="400" cy="205" r="28" fill="#fde047" />
+                        <rect x="360" y="238" width="80" height="130" rx="14" fill="#6366f1" />
+                        <circle cx="630" cy="212" r="28" fill="#fde047" />
+                        <rect x="590" y="244" width="80" height="130" rx="14" fill="#ec4899" />
+                      </g>
+                    )}
+                  </svg>
+
+                  {currentVisionData.detections.map((d, i) => (
+                    <div
+                      key={i}
+                      style={{
+                        left: `${d.box[0]}%`,
+                        top: `${d.box[1]}%`,
+                        width: `${d.box[2]}%`,
+                        height: `${d.box[3]}%`
+                      }}
+                      className={`absolute border-2 rounded ${
+                        d.label === 'person' ? 'border-emerald-400 bg-emerald-400/10' : 'border-cyan-400 bg-cyan-400/10'
+                      }`}
+                    >
+                      <span className="absolute -top-5 left-0 px-1.5 py-0.5 rounded bg-cyan-400 text-slate-950 text-[10px] font-bold">
+                        {d.display} {(d.confidence * 100).toFixed(0)}%
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="lg:col-span-5 space-y-4">
+              <div className="p-5 rounded-2xl bg-slate-900/85 border border-slate-800 space-y-4">
+                <h3 className="text-base font-bold text-white">CCTV Inspection Verdict</h3>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="text-xs text-slate-400">Occupants Seen</div>
+                    <div className="text-2xl font-bold text-white">{currentVisionData.people}</div>
+                  </div>
+                  <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800">
+                    <div className="text-xs text-slate-400">Active Fixtures Seen</div>
+                    <div className="text-2xl font-bold text-cyan-400">
+                      {currentVisionData.equipment_visible.length}
+                    </div>
+                  </div>
+                </div>
+
+                {needsVerification ? (
+                  <div className="p-4 rounded-xl bg-amber-950/30 border border-amber-500/50 space-y-2">
+                    <div className="text-sm font-bold text-amber-300">
+                      ⚠️ FLAGGED FOR VERIFICATION (needs_verification: true)
+                    </div>
+                    <p className="text-xs text-slate-300">
+                      CCTV detects <b>0 people</b> while <b>{currentVisionData.equipment_visible.join(', ')}</b> are active in <b>{visionLinkedRoom?.name}</b>.
+                    </p>
+                    {visionLinkedRoom && (
+                      <button
+                        onClick={() => optimizeSingleRoom(visionLinkedRoom.id)}
+                        className="w-full py-2 rounded-lg bg-amber-400 text-slate-950 font-bold text-xs"
+                      >
+                        Cut Off Room After-Hours Power Now
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <div className="p-4 rounded-xl bg-emerald-950/30 border border-emerald-500/40 text-xs text-emerald-300 font-bold">
+                    ✅ Room Occupied — Electrical Fixtures Normal
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ================================================================== */}
+        {/* TAB 5: GEMINI AI ADVISOR */}
+        {/* ================================================================== */}
+        {activeTab === 'assistant' && (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <div className="lg:col-span-8 flex flex-col h-[560px] rounded-2xl bg-slate-900/85 border border-slate-800 overflow-hidden">
+              <div className="p-4 border-b border-slate-800 flex items-center justify-between">
+                <div className="font-bold text-sm text-white flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-cyan-400" />
+                  EcoWatt 5-Floor Gemini Energy Advisor
+                </div>
+                <button
+                  onClick={() => askEcoWattAi('', 'report')}
+                  className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-teal-400 to-cyan-500 text-slate-950 font-bold text-xs"
+                >
+                  Generate 5-Floor Executive Report
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                {chatMessages.map((m, i) => (
+                  <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                    <div
+                      className={`max-w-[85%] rounded-2xl px-4 py-3 text-xs whitespace-pre-wrap leading-relaxed ${
+                        m.role === 'user'
+                          ? 'bg-cyan-500 text-slate-950 font-semibold'
+                          : 'bg-slate-950 border border-slate-800 text-slate-200'
+                      }`}
+                    >
+                      {m.text}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  askEcoWattAi(userInput, 'chat');
+                }}
+                className="p-3 border-t border-slate-800 flex gap-2"
+              >
+                <input
+                  type="text"
+                  value={userInput}
+                  onChange={(e) => setUserInput(e.target.value)}
+                  placeholder="Ask about ACS 12 PyNest Lab, AIS 9 Vision Nest, ceiling fans, projectors..."
+                  className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2 text-xs text-white"
+                />
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded-xl bg-cyan-500 text-slate-950 font-bold text-xs"
+                >
+                  Ask
+                </button>
+              </form>
+            </div>
+
+            <div className="lg:col-span-4 p-5 rounded-2xl bg-slate-900/85 border border-slate-800 space-y-3">
+              <div className="text-sm font-bold text-white">Quick Multi-Floor Prompts</div>
+              {[
+                "Why is Floor 1 ACS 12 PyNest Lab glowing red at night?",
+                "How much power do Ceiling Fans, Projectors, and Speakers waste across all 5 floors?",
+                "Which labs in Floor 4 Atal Incubation Centre (AIC) need schedule optimization?"
+              ].map((q, i) => (
+                <button
+                  key={i}
+                  onClick={() => askEcoWattAi(q, 'chat')}
+                  className="w-full text-left p-3 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-xs text-slate-300"
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}

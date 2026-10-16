@@ -24,6 +24,12 @@ import {
 const TARIFF_INR = 8;
 const CO2_PER_KWH = 0.8;
 
+function formatCountdown(expiresAt) {
+  if (!expiresAt) return '30:00';
+  const seconds = Math.max(0, Math.floor((new Date(expiresAt).getTime() - Date.now()) / 1000));
+  return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
 const FLOOR_META = [
   {
     level: 0,
@@ -1258,8 +1264,8 @@ function CourtyardBuilding3D({
   }, [cameraViewMode, selectedRoomId, activeFloorFilter]);
 
   return (
-    <div className="relative w-full h-full min-h-[520px] rounded-2xl overflow-hidden border border-slate-800 bg-[#050914]">
-      <div ref={mountRef} className="w-full h-full min-h-[520px]" />
+    <div className="twin-viewport relative w-full rounded-2xl overflow-hidden border border-slate-800 bg-[#050914]">
+      <div ref={mountRef} className="twin-viewport-canvas w-full h-full" />
 
       {/* Department Signage Banner Overlay (Matches Courtyard Photo Banners) */}
       <div className="pointer-events-none absolute top-3 left-3 right-3 flex flex-wrap items-center justify-between gap-2">
@@ -1320,7 +1326,7 @@ function CourtyardBuilding3D({
 // ============================================================================
 function Blueprint2DFloorMap({ floorData, selectedRoomId, onSelectRoom, currentHour }) {
   return (
-    <div className="relative w-full h-full min-h-[520px] rounded-2xl border border-slate-800 bg-[#051a1d] p-4 flex flex-col items-center justify-center overflow-hidden">
+    <div className="twin-viewport relative w-full rounded-2xl border border-slate-800 bg-[#051a1d] p-4 flex flex-col items-center justify-center overflow-hidden">
       <div className="mb-2 text-center">
         <div className="text-xs font-bold uppercase tracking-widest text-amber-300">
           {FLOOR_META[floorData.level]?.banner}
@@ -1474,6 +1480,18 @@ function Blueprint2DFloorMap({ floorData, selectedRoomId, onSelectRoom, currentH
 // MAIN APPLICATION COMPONENT
 // ============================================================================
 export default function App() {
+  const [theme, setTheme] = useState(() => {
+    try {
+      const savedTheme = window.localStorage.getItem('ecowatt-theme');
+      if (savedTheme === 'light' || savedTheme === 'dark') return savedTheme;
+    } catch {}
+    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  });
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+    try { window.localStorage.setItem('ecowatt-theme', theme); } catch {}
+  }, [theme]);
   const [activeTab, setActiveTab] = useState('twin'); // 'twin' | 'dashboard' | 'simulator' | 'vision' | 'assistant'
   const [twinMode, setTwinMode] = useState('3d'); // '3d' | '2d'
   const [activeFloorFilter, setActiveFloorFilter] = useState('all'); // 'all' | 'exploded' | 0 | 1 | 2 | 3 | 4
@@ -1496,6 +1514,20 @@ export default function App() {
   const [isDetectingWebcam, setIsDetectingWebcam] = useState(false);
   const webcamVideoRef = useRef(null);
   const webcamStreamRef = useRef(null);
+  const occupancyNotifiedRoomsRef = useRef(new Set());
+  const occupancyContextRef = useRef({ floors, currentHour });
+  occupancyContextRef.current = { floors, currentHour };
+  const [approvalRecipients, setApprovalRecipients] = useState([]);
+  const [recipientDraft, setRecipientDraft] = useState('');
+  const [approvalSettingsMessage, setApprovalSettingsMessage] = useState('');
+  const [approvalRequests, setApprovalRequests] = useState([]);
+  const [approvalEmailConfigured, setApprovalEmailConfigured] = useState(false);
+  const [isSendingTestEmail, setIsSendingTestEmail] = useState(false);
+  const [admins, setAdmins] = useState([]);
+  const [adminNameDraft, setAdminNameDraft] = useState('');
+  const [adminEmailDraft, setAdminEmailDraft] = useState('');
+  const [approvalToast, setApprovalToast] = useState('');
+  const seenApprovalIdsRef = useRef(new Set());
 
   // AI Assistant State
   const [chatMessages, setChatMessages] = useState([
@@ -1654,6 +1686,19 @@ export default function App() {
         })
       }))
     );
+    const room = floors.flatMap((floor) => floor.rooms).find((item) => item.id === roomId);
+    const equipment = room?.equipment.find((item) => item.id === eqId);
+    if (room && equipment) {
+      fetch('/api/equipment/state', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ room_code: room.code, equipment_name: equipment.name, ...changes })
+      }).then(async (response) => {
+        if (!response.ok) {
+          const result = await response.json();
+          throw new Error(result.detail || 'Could not sync fixture state.');
+        }
+      }).catch((error) => setApprovalSettingsMessage(error.message));
+    }
   };
 
   const optimizeSingleRoom = (roomId) => {
@@ -1703,6 +1748,161 @@ export default function App() {
     setFloors(JSON.parse(JSON.stringify(INITIAL_FLOORS)));
   };
 
+  const applyApprovalToTwin = (approval) => {
+    if (approval.status !== 'approved') return;
+    const approvedEquipmentIds = new Set(approval.equipment_ids || []);
+    setFloors((previous) => {
+      let changed = false;
+      const next = previous.map((floor) => ({
+        ...floor,
+        rooms: floor.rooms.map((room) => {
+          if (approval.scope !== 'floor' && room.id !== approval.room_id) return room;
+          let roomChanged = false;
+          const equipment = room.equipment.map((item) => {
+            if (!approvedEquipmentIds.has(item.id) || !item.is_on) return item;
+            changed = true;
+            roomChanged = true;
+            return { ...item, is_on: false };
+          });
+          return roomChanged ? { ...room, equipment } : room;
+        })
+      }));
+      return changed ? next : previous;
+    });
+  };
+
+  const refreshApprovalRequests = async () => {
+    try {
+      const response = await fetch('/api/approvals?limit=50');
+      if (!response.ok) return;
+      const approvals = await response.json();
+      const newPending = approvals.find((approval) => approval.status === 'pending' && !seenApprovalIdsRef.current.has(approval.id));
+      approvals.forEach((approval) => seenApprovalIdsRef.current.add(approval.id));
+      if (newPending) {
+        setApprovalToast(`Approval requested: ${newPending.room_name} has no people while fixtures are on.`);
+        window.setTimeout(() => setApprovalToast(''), 7000);
+      }
+      setApprovalRequests(approvals);
+      approvals.filter((approval) => approval.status === 'approved').forEach(applyApprovalToTwin);
+    } catch {
+      // The twin remains usable when the approval service is offline.
+    }
+  };
+
+  const saveApprovalRecipients = async (nextRecipients) => {
+    setApprovalSettingsMessage('Saving…');
+    try {
+      const previous = new Set(approvalRecipients);
+      const next = new Set(nextRecipients);
+      for (const email of previous) {
+        if (next.has(email)) continue;
+        const admin = admins.find((item) => item.email === email);
+        if (admin) await fetch(`/api/admins/${admin.id}`, { method: 'DELETE' });
+      }
+      for (const email of next) {
+        if (previous.has(email)) continue;
+        const response = await fetch('/api/admins', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: email.split('@')[0], email }) });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.detail || 'Could not add admin.');
+      }
+      const [adminResponse, settingsResponse] = await Promise.all([fetch('/api/admins'), fetch('/api/approval-settings')]);
+      const adminList = adminResponse.ok ? await adminResponse.json() : [];
+      const settings = settingsResponse.ok ? await settingsResponse.json() : { recipients: [], email_configured: false };
+      setAdmins(adminList); setApprovalRecipients(settings.recipients || []); setApprovalEmailConfigured(Boolean(settings.email_configured));
+      setApprovalSettingsMessage('Admin recipient list saved.');
+    } catch (error) {
+      setApprovalSettingsMessage(error.message || 'Could not save email recipients.');
+    }
+  };
+
+  const sendTestApprovalEmail = async () => {
+    setIsSendingTestEmail(true);
+    setApprovalSettingsMessage('Sending test email…');
+    try {
+      const response = await fetch('/api/email/test', { method: 'POST' });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || 'Test email could not be sent.');
+      setApprovalSettingsMessage(`Test email sent to ${result.recipient_count} active admins.`);
+    } catch (error) {
+      setApprovalSettingsMessage(error.message || 'Test email could not be sent.');
+    } finally {
+      setIsSendingTestEmail(false);
+    }
+  };
+
+  const refreshAdmins = async () => {
+    const response = await fetch('/api/admins');
+    if (!response.ok) throw new Error('Could not load admins.');
+    setAdmins(await response.json());
+  };
+
+  const addAdmin = async (event) => {
+    event.preventDefault();
+    const response = await fetch('/api/admins', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: adminNameDraft.trim(), email: adminEmailDraft.trim() })
+    });
+    const result = await response.json();
+    if (!response.ok) { setApprovalSettingsMessage(result.detail || 'Could not add admin.'); return; }
+    setAdminNameDraft(''); setAdminEmailDraft(''); setApprovalSettingsMessage('Admin added.');
+    await refreshAdmins();
+  };
+
+  const updateAdmin = async (admin, changes) => {
+    const response = changes.remove
+      ? await fetch(`/api/admins/${admin.id}`, { method: 'DELETE' })
+      : await fetch(`/api/admins/${admin.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: !admin.active }) });
+    const result = changes.remove ? null : await response.json();
+    if (!response.ok) { setApprovalSettingsMessage(result?.detail || 'Could not update admin.'); return; }
+    await refreshAdmins();
+  };
+
+  const simulateEmptyRoom = async (room = selectedRoom) => {
+    if (!room) return;
+    const fixtures = room.equipment.filter((item) => item.is_on && !item.always24x7 && item.kind !== 'cctv' && item.kind !== 'electrical');
+    if (!fixtures.length) { setApprovalSettingsMessage('Turn on at least one nonessential fixture in the selected room first.'); return; }
+    setApprovalSettingsMessage(`Creating demo request for ${room.name}…`);
+    try {
+      const response = await fetch('/api/simulate-empty', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+        room_id: room.id, room_code: room.code, equipment_ids: fixtures.map((item) => item.id), equipment_names: fixtures.map((item) => item.name)
+      }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || 'Could not create the demo request.');
+      setApprovalSettingsMessage(`Demo approval created for ${room.name}.`);
+      refreshApprovalRequests();
+    } catch (error) { setApprovalSettingsMessage(error.message || 'Could not create the demo request.'); }
+  };
+
+  const addApprovalRecipient = () => {
+    const email = recipientDraft.trim().toLowerCase();
+    if (!email) return;
+    if (approvalRecipients.length >= 4) {
+      setApprovalSettingsMessage('You can add up to 4 email addresses.');
+      return;
+    }
+    if (approvalRecipients.includes(email)) {
+      setApprovalSettingsMessage('That email address is already on the list.');
+      return;
+    }
+    setRecipientDraft('');
+    saveApprovalRecipients([...approvalRecipients, email]);
+  };
+
+  useEffect(() => {
+    fetch('/api/approval-settings')
+      .then((response) => response.ok ? response.json() : null)
+      .then((settings) => {
+        if (!settings) return;
+        setApprovalRecipients(settings.recipients || []);
+        setApprovalEmailConfigured(Boolean(settings.email_configured));
+      })
+      .catch(() => setApprovalSettingsMessage('Email approval settings are unavailable until the backend is running.'));
+    refreshApprovalRequests();
+    refreshAdmins().catch(() => {});
+    const intervalId = window.setInterval(refreshApprovalRequests, 5000);
+    return () => window.clearInterval(intervalId);
+  }, []);
+
   const getApplianceIcon = (kind) => {
     switch (kind) {
       case 'fan': return <Fan className="w-4 h-4 text-cyan-400 animate-spin" style={{ animationDuration: '4s' }} />;
@@ -1743,6 +1943,7 @@ export default function App() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
       webcamStreamRef.current = stream;
+      occupancyNotifiedRoomsRef.current.clear();
       setWebcamDetections(null);
       setWebcamDetectionError('');
       setIsWebcamActive(true);
@@ -1755,9 +1956,15 @@ export default function App() {
     }
   };
 
+  const resetOccupancyTracker = () => {
+    const room = occupancyContextRef.current.floors.flatMap((floor) => floor.rooms).find((item) => item.id === Number(visionRoomId));
+    if (room) fetch('/api/occupancy/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ room_code: room.code }) }).catch(() => {});
+  };
+
   const stopWebcam = () => {
     webcamStreamRef.current?.getTracks().forEach((track) => track.stop());
     webcamStreamRef.current = null;
+    resetOccupancyTracker();
     setIsWebcamActive(false);
   };
 
@@ -1794,6 +2001,13 @@ export default function App() {
           const formData = new FormData();
           formData.append('file', image, 'webcam-frame.jpg');
           formData.append('room_id', String(visionRoomId));
+           const linkedRoomForCamera = occupancyContextRef.current.floors.flatMap((floor) => floor.rooms).find((room) => room.id === Number(visionRoomId));
+           const cameraFixtures = linkedRoomForCamera?.equipment.filter((item) => item.is_on && !item.always24x7 && item.kind !== 'cctv' && item.kind !== 'electrical') || [];
+           if (linkedRoomForCamera) {
+             formData.append('room_code', linkedRoomForCamera.code);
+             formData.append('equipment_ids', JSON.stringify(cameraFixtures.map((item) => item.id)));
+             formData.append('equipment_names', JSON.stringify(cameraFixtures.map((item) => item.name)));
+           }
 
           activeController = new AbortController();
           const response = await fetch('/api/detect', {
@@ -1806,6 +2020,10 @@ export default function App() {
           if (cancelled) return;
           setWebcamDetections(detections);
           setWebcamDetectionError('');
+           if (detections.approval_request) {
+             setApprovalRequests((previous) => [detections.approval_request, ...previous.filter((item) => item.id !== detections.approval_request.id)]);
+             setApprovalSettingsMessage(`Approval request created for ${detections.approval_request.room_name}.`);
+           }
         } catch (error) {
           if (!cancelled && error.name !== 'AbortError') {
             setWebcamDetectionError(error.message || 'Could not analyze the webcam frame.');
@@ -1823,6 +2041,8 @@ export default function App() {
       cancelled = true;
       window.clearTimeout(timeoutId);
       activeController?.abort();
+      const trackedRoom = occupancyContextRef.current.floors.flatMap((floor) => floor.rooms).find((room) => room.id === Number(visionRoomId));
+      if (trackedRoom) fetch('/api/occupancy/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ room_code: trackedRoom.code }) }).catch(() => {});
       setIsDetectingWebcam(false);
     };
   }, [isWebcamActive, activeTab, visionRoomId]);
@@ -1831,6 +2051,7 @@ export default function App() {
     if (activeTab !== 'vision' && webcamStreamRef.current) {
       webcamStreamRef.current.getTracks().forEach((track) => track.stop());
       webcamStreamRef.current = null;
+      resetOccupancyTracker();
       setIsWebcamActive(false);
     }
   }, [activeTab]);
@@ -1885,12 +2106,12 @@ export default function App() {
     floors.find((f) => f.level === blueprintFloorLevel) || floors[1];
 
   return (
-    <div className="min-h-screen bg-[#050912] text-slate-100 flex flex-col font-sans">
+    <div className="app-shell min-h-screen bg-[#050912] text-slate-100 flex flex-col font-sans">
       {/* ==================================================================== */}
       {/* TOP HEADER BAR */}
       {/* ==================================================================== */}
       <header className="sticky top-0 z-30 border-b border-slate-800 bg-[#070d19]/95 backdrop-blur-xl">
-        <div className="max-w-[1480px] mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="max-w-[1720px] mx-auto px-4 py-2.5 flex flex-wrap items-center justify-between gap-2.5">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-teal-400 via-cyan-500 to-fuchsia-600 flex items-center justify-center shadow-lg shadow-cyan-500/20">
               <Zap className="w-5 h-5 text-slate-950" />
@@ -1900,7 +2121,7 @@ export default function App() {
                 <h1 className="text-lg font-bold tracking-tight text-white">
                   EcoWatt 3D Multi-Floor Campus Twin
                 </h1>
-                <span className="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded-full bg-teal-500/20 text-teal-300 border border-teal-500/40">
+                <span className="app-brand-status px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded-full bg-teal-500/20 text-teal-300 border border-teal-500/40">
                   5 Floors • Courtyard & IoT Fixtures
                 </span>
               </div>
@@ -1911,12 +2132,13 @@ export default function App() {
           </div>
 
           {/* 5 Primary Navigation Tabs */}
-          <nav className="flex items-center gap-1 bg-slate-900 p-1 rounded-xl border border-slate-800 overflow-x-auto">
+          <nav className="app-primary-nav flex items-center gap-1 bg-slate-900 p-1 rounded-xl border border-slate-800 overflow-x-auto">
             {[
               { id: 'twin', label: '3D Floor & Electrical Twin', icon: Box },
               { id: 'dashboard', label: 'Energy Dashboard', icon: LayoutDashboard },
               { id: 'simulator', label: 'What-If Simulator', icon: Sliders },
               { id: 'vision', label: 'CCTV & YOLOv8 Vision', icon: Video },
+              { id: 'admins', label: 'Admin Settings', icon: Users },
               { id: 'assistant', label: 'Gemini AI Advisor', icon: Sparkles }
             ].map((t) => {
               const Icon = t.icon;
@@ -1938,6 +2160,17 @@ export default function App() {
             })}
           </nav>
 
+          <button
+            type="button"
+            onClick={() => setTheme((currentTheme) => currentTheme === 'dark' ? 'light' : 'dark')}
+            className="theme-toggle inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
+            aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+            title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+          >
+            {theme === 'dark' ? <Sun className="h-4 w-4" aria-hidden="true" /> : <Moon className="h-4 w-4" aria-hidden="true" />}
+            <span>{theme === 'dark' ? 'Light' : 'Dark'} mode</span>
+          </button>
+
           {/* Live Campus Totals Pill */}
           <div className="hidden xl:flex items-center gap-3 px-3.5 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs">
             <span className="text-slate-300">
@@ -1954,14 +2187,15 @@ export default function App() {
       {/* ==================================================================== */}
       {/* MAIN CONTENT */}
       {/* ==================================================================== */}
-      <main className="flex-1 max-w-[1480px] w-full mx-auto px-4 py-4">
+      <main className="flex-1 max-w-[1720px] w-full mx-auto px-4 py-3">
+        {approvalToast && <div role="status" className="fixed right-5 top-24 z-50 max-w-md rounded-xl border border-amber-400/50 bg-slate-900 px-4 py-3 text-sm text-amber-200 shadow-xl">{approvalToast}</div>}
         {/* ================================================================== */}
         {/* TAB 1: 3D MULTI-FLOOR COURTYARD & INTERIOR ELECTRICAL TWIN */}
         {/* ================================================================== */}
         {activeTab === 'twin' && (
           <div className="space-y-4">
             {/* Floor Switcher & View Controls Bar */}
-            <div className="p-3.5 rounded-2xl bg-slate-900/85 border border-slate-800 flex flex-wrap items-center justify-between gap-3">
+            <div className="twin-control-bar p-3 rounded-2xl bg-slate-900/85 border border-slate-800 flex flex-wrap items-start justify-between gap-2.5">
               {/* Floor Selector Pills */}
               <div className="flex flex-wrap items-center gap-1.5">
                 <span className="text-xs font-bold uppercase tracking-wider text-slate-400 mr-1 flex items-center gap-1">
@@ -1985,7 +2219,7 @@ export default function App() {
                         if (firstRoom) setSelectedRoomId(firstRoom.id);
                       }
                     }}
-                    className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+                    className={`min-h-10 sm:min-h-0 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition ${
                       activeFloorFilter === fl.id
                         ? 'bg-cyan-500 text-slate-950 font-bold shadow'
                         : 'bg-slate-950 text-slate-300 hover:bg-slate-800 border border-slate-800'
@@ -2001,7 +2235,7 @@ export default function App() {
                 <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800">
                   <button
                     onClick={() => setTwinMode('3d')}
-                    className={`px-3 py-1 rounded-lg text-xs font-bold transition ${
+                    className={`min-h-10 sm:min-h-0 px-3 py-1 rounded-lg text-xs font-bold transition ${
                       twinMode === '3d' ? 'bg-teal-400 text-slate-950' : 'text-slate-400'
                     }`}
                   >
@@ -2009,7 +2243,7 @@ export default function App() {
                   </button>
                   <button
                     onClick={() => setTwinMode('2d')}
-                    className={`px-3 py-1 rounded-lg text-xs font-bold transition ${
+                    className={`min-h-10 sm:min-h-0 px-3 py-1 rounded-lg text-xs font-bold transition ${
                       twinMode === '2d' ? 'bg-amber-400 text-slate-950' : 'text-slate-400'
                     }`}
                   >
@@ -2040,6 +2274,7 @@ export default function App() {
                   </div>
                 )}
               </div>
+
             </div>
 
             {/* 24-Hour Time Scrubber & Quick Anomaly Jump Bar */}
@@ -2289,13 +2524,13 @@ export default function App() {
                       setVisionRoomId(selectedRoom.id);
                       setActiveTab('vision');
                     }}
-                    className="py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-cyan-300 flex items-center justify-center gap-1.5"
+                    className="min-h-10 sm:min-h-0 py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-cyan-300 flex items-center justify-center gap-1.5"
                   >
                     <Video className="w-3.5 h-3.5" /> Live CCTV Feed
                   </button>
                   <button
                     onClick={optimizeAllCampus}
-                    className="py-2 px-3 rounded-xl bg-gradient-to-r from-teal-400 to-cyan-500 text-slate-950 text-xs font-bold flex items-center justify-center gap-1.5"
+                    className="min-h-10 sm:min-h-0 py-2 px-3 rounded-xl bg-gradient-to-r from-teal-400 to-cyan-500 text-slate-950 text-xs font-bold flex items-center justify-center gap-1.5"
                   >
                     <Sparkles className="w-3.5 h-3.5" /> Fix All 5 Floors
                   </button>
@@ -2349,10 +2584,10 @@ export default function App() {
                 <div className="h-72">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={campusSummary.floorChartData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                      <XAxis dataKey="name" stroke="#94a3b8" fontSize={12} />
-                      <YAxis stroke="#94a3b8" fontSize={12} />
-                      <RechartsTooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155' }} />
+                      <CartesianGrid strokeDasharray="3 3" stroke={theme === 'dark' ? '#1e293b' : '#dbe3e9'} />
+                      <XAxis dataKey="name" stroke={theme === 'dark' ? '#94a3b8' : '#475569'} fontSize={12} />
+                      <YAxis stroke={theme === 'dark' ? '#94a3b8' : '#475569'} fontSize={12} />
+                      <RechartsTooltip contentStyle={theme === 'dark' ? { backgroundColor: '#0f172a', borderColor: '#334155', color: '#f8fafc' } : { backgroundColor: '#ffffff', borderColor: '#cbd5e1', color: '#0f172a' }} />
                       <Legend />
                       <Bar dataKey="Useful_kWh" name="Occupied Useful kWh" stackId="a" fill="#10b981" />
                       <Bar dataKey="Wasted_kWh" name="After-Hours Wasted kWh" stackId="a" fill="#ef4444" />
@@ -2372,10 +2607,10 @@ export default function App() {
                 <div className="h-72">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={campusSummary.applianceChartData} layout="vertical">
-                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                      <XAxis type="number" stroke="#94a3b8" fontSize={12} />
-                      <YAxis dataKey="name" type="category" stroke="#94a3b8" fontSize={11} width={110} />
-                      <RechartsTooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155' }} />
+                      <CartesianGrid strokeDasharray="3 3" stroke={theme === 'dark' ? '#1e293b' : '#dbe3e9'} />
+                      <XAxis type="number" stroke={theme === 'dark' ? '#94a3b8' : '#475569'} fontSize={12} />
+                      <YAxis dataKey="name" type="category" stroke={theme === 'dark' ? '#94a3b8' : '#475569'} fontSize={11} width={110} />
+                      <RechartsTooltip contentStyle={theme === 'dark' ? { backgroundColor: '#0f172a', borderColor: '#334155', color: '#f8fafc' } : { backgroundColor: '#ffffff', borderColor: '#cbd5e1', color: '#0f172a' }} />
                       <Legend />
                       <Bar dataKey="Total_kWh" name="Total Daily kWh" fill="#06b6d4" />
                       <Bar dataKey="Wasted_kWh" name="Wasted kWh" fill="#f43f5e" />
@@ -2509,6 +2744,7 @@ export default function App() {
                       <Camera className="h-4 w-4" /> Start webcam
                     </button>
                   )}
+                  <button onClick={() => simulateEmptyRoom(visionLinkedRoom)} className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs font-bold text-amber-200 hover:bg-amber-500/20">Simulate 0 people</button>
                   {webcamError && (
                     <p role="alert" className="basis-full text-xs text-amber-300">{webcamError}</p>
                   )}
@@ -2637,14 +2873,11 @@ export default function App() {
                     <p className="text-xs text-slate-300">
                       CCTV detects <b>0 people</b> while <b>{equipmentToVerify.join(', ')}</b> are active in <b>{visionLinkedRoom?.name}</b>.
                     </p>
-                    {visionLinkedRoom && (
-                      <button
-                        onClick={() => optimizeSingleRoom(visionLinkedRoom.id)}
-                        className="w-full py-2 rounded-lg bg-amber-400 text-slate-950 font-bold text-xs"
-                      >
-                        Cut Off Room After-Hours Power Now
-                      </button>
-                    )}
+                    <p className="text-[11px] text-amber-100/80">
+                      {isWebcamActive
+                        ? 'An approval request is sent to the configured admins. Room fixtures turn off in the 3D twin only after an admin approves.'
+                        : 'Start the webcam to send an approval request. Room fixtures turn off in the 3D twin only after an admin approves.'}
+                    </p>
                   </div>
                 ) : isWebcamActive && currentVisionData.people === 0 ? (
                   <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-300">
@@ -2657,6 +2890,44 @@ export default function App() {
                 )}
               </div>
             </div>
+          </div>
+        )}
+
+        {activeTab === 'admins' && (
+          <div className="grid grid-cols-1 gap-5 xl:grid-cols-12">
+            <section className="space-y-4 xl:col-span-5">
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/85 p-5 space-y-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div><h2 className="text-lg font-bold text-white">Admin Settings</h2><p className="mt-1 text-xs text-slate-400">Up to four admins receive individual approve or reject links.</p></div>
+                  <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${approvalEmailConfigured ? 'bg-emerald-400/10 text-emerald-300' : 'bg-amber-400/10 text-amber-300'}`}>{approvalEmailConfigured ? 'SMTP settings present' : 'SMTP setup needed'}</span>
+                </div>
+                <p className="rounded-lg border border-slate-800 bg-slate-950 p-3 text-xs text-slate-300">Configure the sender and its Google App Password in backend/.env, then restart the backend. Never paste the password into chat.</p>
+                <form onSubmit={addAdmin} className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_auto]">
+                  <input required maxLength={120} value={adminNameDraft} onChange={(event) => setAdminNameDraft(event.target.value)} placeholder="Admin name" aria-label="Admin name" className="min-h-10 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white" />
+                  <input required type="email" maxLength={254} value={adminEmailDraft} onChange={(event) => setAdminEmailDraft(event.target.value)} placeholder="admin@example.com" aria-label="Admin email" className="min-h-10 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white" />
+                  <button disabled={admins.length >= 4} className="min-h-10 rounded-lg bg-cyan-400 px-3 py-2 text-xs font-bold text-slate-950 disabled:opacity-40">Add admin</button>
+                </form>
+                <div className="space-y-2">
+                  {admins.map((admin) => <div key={admin.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950 p-3">
+                    <div className="min-w-0"><div className="truncate text-xs font-semibold text-white">{admin.name}</div><div className="truncate text-[11px] text-slate-400">{admin.email}</div></div>
+                    <div className="flex items-center gap-2"><button onClick={() => updateAdmin(admin, { toggle: true })} className={`min-h-10 rounded px-2 py-1 text-[10px] font-bold ${admin.active ? 'bg-emerald-400/10 text-emerald-300' : 'bg-slate-800 text-slate-400'}`}>{admin.active ? 'Enabled' : 'Disabled'}</button><button onClick={() => updateAdmin(admin, { remove: true })} className="min-h-10 rounded px-2 py-1 text-[10px] font-bold text-rose-300 hover:bg-rose-500/10">Remove</button></div>
+                  </div>)}
+                </div>
+                <div className="flex flex-wrap items-center gap-3"><button type="button" onClick={sendTestApprovalEmail} disabled={!approvalEmailConfigured || !admins.some((admin) => admin.active) || isSendingTestEmail} className="min-h-10 rounded-lg border border-cyan-500/40 px-3 py-2 text-xs font-semibold text-cyan-200 disabled:opacity-40">{isSendingTestEmail ? 'Sending test…' : 'Send test email'}</button><button type="button" onClick={() => simulateEmptyRoom(selectedRoom)} className="min-h-10 rounded-lg border border-amber-500/40 px-3 py-2 text-xs font-semibold text-amber-200">Simulate 0 people in selected room</button></div>
+                {approvalSettingsMessage && <p role="status" className="text-xs text-slate-300">{approvalSettingsMessage}</p>}
+                <p className="text-[11px] leading-relaxed text-amber-200/80">Localhost approval links only open on this computer. For phone demos, set PUBLIC_BASE_URL to your LAN IP, ngrok, or cloudflared URL, and allow access to the backend port.</p>
+              </div>
+            </section>
+            <section className="space-y-5 xl:col-span-7">
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/85 p-5">
+                <h3 className="mb-3 text-sm font-bold text-white">Pending Approvals</h3>
+                {approvalRequests.filter((approval) => approval.status === 'pending').length === 0 ? <p className="text-xs text-slate-400">No pending approvals.</p> : <div className="space-y-2">{approvalRequests.filter((approval) => approval.status === 'pending').map((approval) => <div key={approval.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/20 bg-slate-950 p-3"><div><div className="text-xs font-semibold text-white">{approval.room_name} · Floor {approval.floor_level}</div><div className="mt-1 text-[10px] text-slate-400">{approval.equipment_names?.join(', ')} · {approval.estimated_kw ?? '—'} kW</div></div><span className="text-xs font-bold text-amber-300">Expires in {formatCountdown(approval.expires_at)}</span></div>)}</div>}
+              </div>
+              <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/85">
+                <div className="border-b border-slate-800 p-5"><h3 className="text-sm font-bold text-white">Approval History</h3></div>
+                <div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead className="bg-slate-950 text-slate-400"><tr><th className="p-3">Room / time</th><th className="p-3">Decision</th><th className="p-3">Admin</th><th className="p-3">Energy saved</th></tr></thead><tbody>{approvalRequests.filter((approval) => approval.status !== 'pending').map((approval) => <tr key={approval.id} className="border-t border-slate-800"><td className="p-3 text-slate-200">{approval.room_name}<div className="text-[10px] text-slate-500">{approval.decided_at ? new Date(approval.decided_at).toLocaleString() : new Date(approval.created_at).toLocaleString()}</div></td><td className="p-3 capitalize text-slate-200">{approval.status}</td><td className="p-3 text-slate-300">{approval.decided_by_email || '—'}</td><td className="p-3 text-emerald-300">{approval.status === 'approved' ? `${approval.estimated_kw || 0} kWh/h` : '—'}</td></tr>)}</tbody></table>{approvalRequests.filter((approval) => approval.status !== 'pending').length === 0 && <p className="p-4 text-xs text-slate-400">Decisions will appear here.</p>}</div>
+              </div>
+            </section>
           </div>
         )}
 
