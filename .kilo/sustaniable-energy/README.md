@@ -6,6 +6,10 @@ A full-stack campus energy digital twin featuring a 3D campus view, energy analy
 
 Use three terminals from this directory.
 
+## Vercel frontend deployment
+
+Keep the Vercel project Root Directory set to the repository root. The root `vercel.json` installs and builds the Vite app in `frontend/` and serves its `dist/` output. The FastAPI backend and mail service must be deployed separately; configure API routing to the deployed backend before using features that call `/api`.
+
 ### Mail service
 
 The mail service uses Express and Nodemailer, and reads the SMTP credentials from `backend/.env` so the Gmail App Password is stored only once.

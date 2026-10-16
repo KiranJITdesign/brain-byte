@@ -1,0 +1,5 @@
+{
+  "installCommand": "npm --prefix .kilo/sustaniable-energy/frontend ci",
+  "buildCommand": "npm --prefix .kilo/sustaniable-energy/frontend run build",
+  "outputDirectory": ".kilo/sustaniable-energy/frontend/dist"
+}
