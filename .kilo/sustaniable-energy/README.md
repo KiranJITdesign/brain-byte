@@ -8,7 +8,11 @@ Use three terminals from this directory.
 
 ## Vercel frontend deployment
 
-Keep the Vercel project Root Directory set to the repository root. The root `vercel.json` installs and builds the Vite app in `frontend/` and serves its `dist/` output. The FastAPI backend and mail service must be deployed separately; configure API routing to the deployed backend before using features that call `/api`.
+Keep the Vercel project Root Directory set to the repository root. The root `vercel.json` installs and builds the Vite app in `frontend/` and serves its `dist/` output.
+
+The FastAPI API and mailer are separate Render web services described in the root `render.yaml`. Create a Render Blueprint from the repository and provide the prompted secrets. Use a hosted PostgreSQL database and set its SQLAlchemy connection string as `DATABASE_URL`. Once Render and Vercel have assigned the service URLs, set `MAIL_SERVICE_URL`, `PUBLIC_BASE_URL`, and `CORS_ORIGINS` on the backend (`CORS_ORIGINS` is the Vercel site origin, without a path). Set the same newly generated `MAIL_SERVICE_TOKEN` on both Render services. For Gmail delivery, set `MAIL_USER`, `MAIL_PASS` (a Google App Password), and `SMTP_FROM` on both services.
+
+In Vercel, add `VITE_API_BASE_URL` with the backend's public origin (for example, `https://ecowatt-backend.onrender.com`) for Production, Preview, and Development as needed, then redeploy. This value is public and must not contain secrets. The frontend uses it to call the cross-origin API. Add any Vercel preview origins to `CORS_ORIGINS` if you want preview deployments to reach the backend.
 
 ### Mail service
 

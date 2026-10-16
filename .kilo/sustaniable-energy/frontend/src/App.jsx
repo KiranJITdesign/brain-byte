@@ -12,6 +12,9 @@ import {
   Volume2, Video, Fan, Server, Compass, Maximize2
 } from 'lucide-react';
 
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
+const apiFetch = (path, options) => fetch(`${API_BASE_URL}${path}`, options);
+
 // ============================================================================
 // CONSTANTS & EXACT 5-FLOOR ARCHITECTURAL BLUEPRINT DATA
 // Modeled directly on the 5 uploaded college floor plans & courtyard photo:
@@ -1689,7 +1692,7 @@ export default function App() {
     const room = floors.flatMap((floor) => floor.rooms).find((item) => item.id === roomId);
     const equipment = room?.equipment.find((item) => item.id === eqId);
     if (room && equipment) {
-      fetch('/api/equipment/state', {
+      apiFetch('/api/equipment/state', {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ room_code: room.code, equipment_name: equipment.name, ...changes })
       }).then(async (response) => {
@@ -1773,7 +1776,7 @@ export default function App() {
 
   const refreshApprovalRequests = async () => {
     try {
-      const response = await fetch('/api/approvals?limit=50');
+      const response = await apiFetch('/api/approvals?limit=50');
       if (!response.ok) return;
       const approvals = await response.json();
       const newPending = approvals.find((approval) => approval.status === 'pending' && !seenApprovalIdsRef.current.has(approval.id));
@@ -1797,15 +1800,15 @@ export default function App() {
       for (const email of previous) {
         if (next.has(email)) continue;
         const admin = admins.find((item) => item.email === email);
-        if (admin) await fetch(`/api/admins/${admin.id}`, { method: 'DELETE' });
+        if (admin) await apiFetch(`/api/admins/${admin.id}`, { method: 'DELETE' });
       }
       for (const email of next) {
         if (previous.has(email)) continue;
-        const response = await fetch('/api/admins', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: email.split('@')[0], email }) });
+        const response = await apiFetch('/api/admins', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: email.split('@')[0], email }) });
         const result = await response.json();
         if (!response.ok) throw new Error(result.detail || 'Could not add admin.');
       }
-      const [adminResponse, settingsResponse] = await Promise.all([fetch('/api/admins'), fetch('/api/approval-settings')]);
+      const [adminResponse, settingsResponse] = await Promise.all([apiFetch('/api/admins'), apiFetch('/api/approval-settings')]);
       const adminList = adminResponse.ok ? await adminResponse.json() : [];
       const settings = settingsResponse.ok ? await settingsResponse.json() : { recipients: [], email_configured: false };
       setAdmins(adminList); setApprovalRecipients(settings.recipients || []); setApprovalEmailConfigured(Boolean(settings.email_configured));
@@ -1819,7 +1822,7 @@ export default function App() {
     setIsSendingTestEmail(true);
     setApprovalSettingsMessage('Sending test email…');
     try {
-      const response = await fetch('/api/email/test', { method: 'POST' });
+      const response = await apiFetch('/api/email/test', { method: 'POST' });
       const result = await response.json();
       if (!response.ok) throw new Error(result.detail || 'Test email could not be sent.');
       setApprovalSettingsMessage(`Test email sent to ${result.recipient_count} active admins.`);
@@ -1831,14 +1834,14 @@ export default function App() {
   };
 
   const refreshAdmins = async () => {
-    const response = await fetch('/api/admins');
+    const response = await apiFetch('/api/admins');
     if (!response.ok) throw new Error('Could not load admins.');
     setAdmins(await response.json());
   };
 
   const addAdmin = async (event) => {
     event.preventDefault();
-    const response = await fetch('/api/admins', {
+    const response = await apiFetch('/api/admins', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: adminNameDraft.trim(), email: adminEmailDraft.trim() })
     });
@@ -1850,8 +1853,8 @@ export default function App() {
 
   const updateAdmin = async (admin, changes) => {
     const response = changes.remove
-      ? await fetch(`/api/admins/${admin.id}`, { method: 'DELETE' })
-      : await fetch(`/api/admins/${admin.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: !admin.active }) });
+      ? await apiFetch(`/api/admins/${admin.id}`, { method: 'DELETE' })
+      : await apiFetch(`/api/admins/${admin.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: !admin.active }) });
     const result = changes.remove ? null : await response.json();
     if (!response.ok) { setApprovalSettingsMessage(result?.detail || 'Could not update admin.'); return; }
     await refreshAdmins();
@@ -1863,7 +1866,7 @@ export default function App() {
     if (!fixtures.length) { setApprovalSettingsMessage('Turn on at least one nonessential fixture in the selected room first.'); return; }
     setApprovalSettingsMessage(`Creating demo request for ${room.name}…`);
     try {
-      const response = await fetch('/api/simulate-empty', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+      const response = await apiFetch('/api/simulate-empty', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
         room_id: room.id, room_code: room.code, equipment_ids: fixtures.map((item) => item.id), equipment_names: fixtures.map((item) => item.name)
       }) });
       const result = await response.json();
@@ -1889,7 +1892,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    fetch('/api/approval-settings')
+    apiFetch('/api/approval-settings')
       .then((response) => response.ok ? response.json() : null)
       .then((settings) => {
         if (!settings) return;
@@ -1958,7 +1961,7 @@ export default function App() {
 
   const resetOccupancyTracker = () => {
     const room = occupancyContextRef.current.floors.flatMap((floor) => floor.rooms).find((item) => item.id === Number(visionRoomId));
-    if (room) fetch('/api/occupancy/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ room_code: room.code }) }).catch(() => {});
+    if (room) apiFetch('/api/occupancy/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ room_code: room.code }) }).catch(() => {});
   };
 
   const stopWebcam = () => {
@@ -2010,7 +2013,7 @@ export default function App() {
            }
 
           activeController = new AbortController();
-          const response = await fetch('/api/detect', {
+          const response = await apiFetch('/api/detect', {
             method: 'POST',
             body: formData,
             signal: activeController.signal
@@ -2042,7 +2045,7 @@ export default function App() {
       window.clearTimeout(timeoutId);
       activeController?.abort();
       const trackedRoom = occupancyContextRef.current.floors.flatMap((floor) => floor.rooms).find((room) => room.id === Number(visionRoomId));
-      if (trackedRoom) fetch('/api/occupancy/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ room_code: trackedRoom.code }) }).catch(() => {});
+      if (trackedRoom) apiFetch('/api/occupancy/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ room_code: trackedRoom.code }) }).catch(() => {});
       setIsDetectingWebcam(false);
     };
   }, [isWebcamActive, activeTab, visionRoomId]);

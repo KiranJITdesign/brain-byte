@@ -71,7 +71,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="EcoWatt 5-Floor Twin API", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+cors_origins = [
+    origin.strip()
+    for origin in os.getenv("CORS_ORIGINS", "*").split(",")
+    if origin.strip()
+]
+app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_methods=["*"], allow_headers=["*"])
 
 
 def campus_payload(db: Session) -> dict:

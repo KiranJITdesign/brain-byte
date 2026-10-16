@@ -1,0 +1,60 @@
+services:
+  - type: web
+    name: ecowatt-backend
+    runtime: python
+    rootDir: .kilo/sustaniable-energy/backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: TARIFF_INR_PER_KWH
+        value: "8"
+      - key: MAIL_USER
+        sync: false
+      - key: MAIL_PASS
+        sync: false
+      - key: MAIL_HOST
+        value: smtp.gmail.com
+      - key: MAIL_PORT
+        value: "465"
+      - key: SMTP_FROM
+        sync: false
+      - key: MAIL_SERVICE_URL
+        sync: false
+      - key: MAIL_SERVICE_TOKEN
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: EMPTY_SECONDS
+        value: "20"
+      - key: APPROVAL_EXPIRY_MINUTES
+        value: "30"
+      - key: REJECT_COOLDOWN_MINUTES
+        value: "30"
+
+  - type: web
+    name: ecowatt-mail
+    runtime: node
+    rootDir: .kilo/sustaniable-energy/mail-service
+    buildCommand: npm ci
+    startCommand: npm start
+    envVars:
+      - key: MAIL_USER
+        sync: false
+      - key: MAIL_PASS
+        sync: false
+      - key: MAIL_HOST
+        value: smtp.gmail.com
+      - key: MAIL_PORT
+        value: "465"
+      - key: SMTP_FROM
+        sync: false
+      - key: MAIL_SERVICE_TOKEN
+        sync: false

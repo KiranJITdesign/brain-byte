@@ -24,7 +24,7 @@ if ((password.startsWith('"') && password.endsWith('"')) || (password.startsWith
 password = password.replace(/\s+/g, "");
 const serviceToken = (process.env.MAIL_SERVICE_TOKEN || "").trim();
 const mailConfigured = Boolean(host && Number.isInteger(port) && port > 0 && port <= 65535 && sender && username && password);
-const servicePort = Number(process.env.MAIL_SERVICE_PORT || 8025);
+const servicePort = Number(process.env.PORT || process.env.MAIL_SERVICE_PORT || 8025);
 
 const transporter = mailConfigured
   ? nodemailer.createTransport({
@@ -88,7 +88,7 @@ app.post("/send", async (req, res) => {
   }
 });
 
-app.listen(servicePort, "127.0.0.1", () => {
-  console.log(`Mail service listening on http://127.0.0.1:${servicePort}`);
+app.listen(servicePort, process.env.HOST || "0.0.0.0", () => {
+  console.log(`Mail service listening on port ${servicePort}`);
   console.log(`SMTP settings ${mailConfigured ? "are present" : "are incomplete"}; shared token ${serviceToken ? "is configured" : "is missing"}.`);
 });
